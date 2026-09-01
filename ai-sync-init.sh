@@ -62,8 +62,20 @@ render() { # render <template> -> stdout
 
 CREATED=(); UPDATED=(); SKIPPED=(); DRIFT=()
 
+# .ai-sync-ignore lists managed paths this repo has deliberately customized —
+# tradingent, for example, extends the hook with a runtime-state exemption.
+# Overwriting a considered local change is worse than leaving it drifted, so
+# ignored paths are neither rewritten nor reported as drift.
+IGNORE_FILE=".ai-sync-ignore"
+is_ignored() {
+  [ -f "$IGNORE_FILE" ] || return 1
+  sed -e 's/#.*//' -e 's/[[:space:]]*$//' "$IGNORE_FILE" \
+    | grep -qxF "$1"
+}
+
 sync_file() { # sync_file <template> <dest> [executable]
   local tpl="$1" dest="$2" exec_bit="${3:-}" tmp
+  if is_ignored "$dest"; then SKIPPED+=("$dest (local override)"); return; fi
   tmp="$(mktemp)"; render "$tpl" > "$tmp"
   if [ ! -f "$dest" ]; then
     if [ "$CHECK" = "1" ]; then DRIFT+=("$dest (missing)"); rm -f "$tmp"; return; fi
@@ -101,7 +113,9 @@ seed_file "$TEMPLATES/AI_HANDOFF.md" "AI_HANDOFF.md"
 # replaced, so hand-written architecture and command sections survive a re-sync.
 BEGIN_MARK="<!-- AI-SYNC-LEDGER:BEGIN"
 END_MARK="<!-- AI-SYNC-LEDGER:END -->"
-if [ ! -f AGENTS.md ]; then
+if is_ignored "AGENTS.md"; then
+  SKIPPED+=("AGENTS.md (local override)")
+elif [ ! -f AGENTS.md ]; then
   seed_file "$TEMPLATES/AGENTS.skeleton.md" "AGENTS.md"
 else
   block="$(mktemp)"; render "$TEMPLATES/AGENTS.ledger-block.md" > "$block"

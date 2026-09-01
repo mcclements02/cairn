@@ -93,6 +93,7 @@ scripts/ai-sync-install.sh       enable hooks (once per clone)
 scripts/ai-sync-status.sh        cross-worktree stranded-work view
 scripts/ai-sync-ci-check.sh      CI mirror of the hook's classification
 .github/workflows/ai-sync.yml    PR enforcement
+.ai-sync-ignore                  optional; paths this repo customizes on purpose
 ```
 
 **Managed files** are rewritten from `templates/` on every run — that's what
@@ -100,6 +101,25 @@ makes re-running a repair. **Content files** (`AGENTS.md`, `AI_HANDOFF.md`) are
 seeded once and never clobbered. In an existing `AGENTS.md`, only the region
 between `<!-- AI-SYNC-LEDGER:BEGIN -->` and `<!-- AI-SYNC-LEDGER:END -->` is
 replaced, so hand-written architecture and command sections survive upgrades.
+
+## Protecting a deliberate local change
+
+Some repos customize a managed file on purpose. A trading repo in the fleet
+extends the hook so runtime evidence files (`forward_test*.json`,
+`ml_events_*.jsonl`, …) don't count as code — an evidence checkpoint carries no
+ledger entry by design, and without the exemption the operator learns to reach
+for `--no-verify`, which is how a guard stops guarding.
+
+Overwriting a considered change like that is worse than leaving it drifted. List
+the path in `.ai-sync-ignore` at the repo root:
+
+```
+# deliberately customized — runtime-state exemption, mirrored in ci-check
+.githooks/pre-commit
+scripts/ai-sync-ci-check.sh
+```
+
+Ignored paths are neither rewritten nor reported as drift.
 
 ## Notes from the field
 
