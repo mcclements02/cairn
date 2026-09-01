@@ -1,0 +1,33 @@
+name: AI-SYNC ledger check
+
+# Fails a PR that changes code without updating AI_HANDOFF.md, so cross-agent
+# work stays in sync and nothing is stranded. Apply the 'skip-ledger' label to
+# bypass for a docs-only PR (auditable, unlike a local --no-verify).
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  ledger:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Ledger check
+        if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-ledger') }}
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin "$BASE_REF"
+          changed="$(git diff --name-only "origin/${BASE_REF}...HEAD")"
+          echo "Changed files in this PR:"
+          printf '%s\n' "$changed" | sed 's/^/  /'
+          printf '%s\n' "$changed" | bash __SCRIPTS_DIR__/ai-sync-ci-check.sh
+      - name: Bypass notice
+        if: ${{ contains(github.event.pull_request.labels.*.name, 'skip-ledger') }}
+        run: |
+          echo "ai-sync skip-ledger label present; ledger check bypassed (auditable)."
