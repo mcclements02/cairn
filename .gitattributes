@@ -1,0 +1,11 @@
+# Shell scripts and git hooks MUST keep LF endings. Git for Windows defaults to
+# core.autocrlf=true, which rewrites them to CRLF on checkout; bash then fails
+# on the stray \r with "set: pipefail: invalid option name". This overrides that
+# for every clone, on every platform.
+*.sh            text eol=lf
+.githooks/*     text eol=lf
+templates/githooks/*  text eol=lf
+ai-sync-init.sh text eol=lf
+
+# Markdown is written by humans and agents on both platforms; normalize.
+*.md            text

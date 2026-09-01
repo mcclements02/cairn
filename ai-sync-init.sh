@@ -53,8 +53,12 @@ fi
 BRANCH="$(git branch --show-current 2>/dev/null)"; [ -z "$BRANCH" ] && BRANCH="main"
 DATE="$(date +%Y-%m-%d)"
 
+# Templates are written LF-only (see .gitattributes). Strip any \r anyway, so a
+# zip download or a clone made before those rules still produces working scripts
+# instead of files bash rejects with "invalid option name".
 render() { # render <template> -> stdout
-  sed -e "s|__SCRIPTS_DIR__|$SCRIPTS_DIR|g" \
+  sed -e 's/\r$//' \
+      -e "s|__SCRIPTS_DIR__|$SCRIPTS_DIR|g" \
       -e "s|__PROJECT_NAME__|$PROJECT_NAME|g" \
       -e "s|__BRANCH__|$BRANCH|g" \
       -e "s|__DATE__|$DATE|g" "$1"
