@@ -22,9 +22,18 @@ handoffs, and is readable by whichever agent shows up next.
 ## Install
 
 ```sh
-git clone https://github.com/<you>/cairn.git ~/.cairn
-cd /path/to/your/repo && ~/.cairn/cairn init
+git clone https://github.com/mcclements02/cairn.git ~/.cairn
+ln -s ~/.cairn/cairn /usr/local/bin/cairn   # optional: put it on PATH
 ```
+
+Then, in any repo:
+
+```sh
+cairn init
+```
+
+Without the symlink, call it by path — `~/.cairn/cairn init`. On Windows use Git
+Bash or WSL; see [Platforms](#platforms).
 
 ```
 cairn init   [--force] [--scripts-dir DIR] [--entry-file PATH] [--adopt-entry-file PATH] [PATH]
