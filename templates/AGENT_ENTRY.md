@@ -1,5 +1,5 @@
 <!-- CAIRN-ENTRY:BEGIN (managed section; edit the template + re-run cairn init) -->
-## Cairn coordination
+## cAIrn coordination
 
 Read and follow the repository-root `AGENTS.md` before working. Read the
 repository-root `AI_HANDOFF.md` before starting a code task. Whenever you change

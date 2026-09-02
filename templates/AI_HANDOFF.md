@@ -29,13 +29,13 @@ Append-only. One entry per handoff. Never rewrite or delete past entries. A merg
 conflict here means two agents diverged — keep **both** entries.
 
 ### __DATE__ · __BRANCH__ · cairn
-- **Changed:** Initialized the Cairn protocol — `AGENTS.md` ledger section,
+- **Changed:** Initialized the cAIrn protocol — `AGENTS.md` ledger section,
   `AI_HANDOFF.md`, `AI_WORKSPACE.md`, runtime entry points,
   `.githooks/pre-commit`, `__SCRIPTS_DIR__/cairn-*`, and
   `.github/workflows/cairn.yml`.
 - **Validation:** scaffolding only — no code paths touched.
 - **Status:** done.
 - **Next:** run `bash __SCRIPTS_DIR__/cairn-hooks.sh` once per clone to enable
-  the pre-commit reminder, and make "Cairn ledger check" a required status
+  the pre-commit reminder, and make "cAIrn ledger check" a required status
   check in branch protection.
 <!-- entry:cairn-init -->

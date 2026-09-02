@@ -62,9 +62,9 @@ under status, status goes stale, and agents stop trusting either.
 Everything else routes to those two. `AI_WORKSPACE.md` and the bundled root-file
 shims are **pointers only** — two to five lines that say "read `AGENTS.md`".
 
-Cairn ships three of those shims because several tools look for a specific
+cAIrn ships three of those shims because several tools look for a specific
 filename at the repository root and will not find `AGENTS.md` on their own. They
-are a convenience, not a supported-agent list, and Cairn neither detects nor
+are a convenience, not a supported-agent list, and cAIrn neither detects nor
 requires the tools they are named for. If they don't match your setup, list them
 in `.cairnignore` before the first `cairn init` and they are never created:
 
@@ -84,23 +84,23 @@ per repo.
 instruction-file convention, so configure any runtime that does not already
 read `AGENTS.md` to load it from the repository root. For a plain-text
 runtime-specific entry point, register any repository-relative path without
-teaching Cairn about the runtime or model:
+teaching cAIrn about the runtime or model:
 
 ```sh
-# Creates and keeps a generic Cairn routing block in this entry file.
+# Creates and keeps a generic cAIrn routing block in this entry file.
 cairn init --entry-file .agents/instructions.md
 
-# Preserves an existing instruction file and appends only Cairn's marked block.
+# Preserves an existing instruction file and appends only cAIrn's marked block.
 cairn init --adopt-entry-file docs/agent-onboarding.md
 ```
 
 Registered paths live in `.cairn/entry-files`, so future `cairn init` and
-`cairn check` runs keep the same entry points in sync. Cairn never discovers or
+`cairn check` runs keep the same entry points in sync. cAIrn never discovers or
 overwrites arbitrary instruction files: a runtime's filename and syntax remain
 the operator's choice.
 
 Registering or adopting an entry point is a project change. Before committing
-that configuration, add the corresponding `AI_HANDOFF.md` Log entry; Cairn does
+that configuration, add the corresponding `AI_HANDOFF.md` Log entry; cAIrn does
 not fabricate an actor, summary, or validation result on an agent's behalf.
 
 ## The ledger
@@ -111,7 +111,7 @@ not fabricate an actor, summary, or validation result on an agent's behalf.
 different rows, so concurrent edits merge cleanly instead of conflicting.
 
 **Log** — append-only, newest on top. Each entry records date · branch · actor ·
-files · validation · status · next. The actor is free text and Cairn never
+files · validation · status · next. The actor is free text and cAIrn never
 validates it: a model name, a runtime, a CI job, a seat like `reviewer`, or a
 human teammate are all equally valid. Use whatever your team can attribute work
 to six months from now.
@@ -146,7 +146,7 @@ AI_WORKSPACE.md                  pointer
 <root-file shims>                three pointer files named for the common root-file
                                  conventions; identical 2-line contents, opt out via .cairnignore
 .cairn/entry-files               optional registry for arbitrary runtime entry files
-<registered entry files>         optional Cairn routing blocks; only marked blocks are managed
+<registered entry files>         optional cAIrn routing blocks; only marked blocks are managed
 .githooks/pre-commit             local enforcement
 scripts/cairn-hooks.sh       enable hooks (once per clone)
 scripts/cairn-status.sh        cross-worktree stranded-work view
@@ -158,7 +158,7 @@ scripts/cairn-check.sh      CI mirror of the hook's classification
 **Managed files** are rewritten from `templates/` on every run — that's what
 makes re-running a repair. **Content files** (`AGENTS.md`, `AI_HANDOFF.md`) are
 seeded once and never clobbered. In an existing `AGENTS.md`, only the region
-between `<!-- Cairn-LEDGER:BEGIN -->` and `<!-- Cairn-LEDGER:END -->` is
+between `<!-- cAIrn-LEDGER:BEGIN -->` and `<!-- cAIrn-LEDGER:END -->` is
 replaced, so hand-written architecture and command sections survive upgrades.
 
 ## Protecting a deliberate local change
@@ -218,7 +218,7 @@ called when the entry was written. A tool that enforces append-only has no
 business rewriting the past.
 
 If you have a required status check named "AI-SYNC ledger check" in branch
-protection, rename it to "Cairn ledger check" after the first PR lands.
+protection, rename it to "cAIrn ledger check" after the first PR lands.
 
 ## Notes from the field
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cairn status — live cross-worktree / cross-branch view to surface stranded
+# cAIrn status — live cross-worktree / cross-branch view to surface stranded
 # (uncommitted or unmerged) work. Read-only: performs NO git mutations.
 set -euo pipefail
 
@@ -11,7 +11,7 @@ for b in main master develop; do
   if git show-ref --verify --quiet "refs/heads/$b"; then base="$b"; break; fi
 done
 
-echo "== Cairn status: $(basename "$ROOT") =="
+echo "== cAIrn status: $(basename "$ROOT") =="
 echo "base branch: ${base:-<none>}"
 echo
 echo "-- worktrees --"

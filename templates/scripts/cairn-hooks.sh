@@ -17,7 +17,7 @@ fi
 chmod +x .githooks/* __SCRIPTS_DIR__/cairn-*.sh 2>/dev/null || true
 git config core.hooksPath .githooks
 
-echo "Cairn installed for $(basename "$ROOT"):"
+echo "cAIrn installed for $(basename "$ROOT"):"
 echo "  core.hooksPath = $(git config --get core.hooksPath)"
 echo "  hook           = .githooks/pre-commit"
 echo "Applies to all linked worktrees. Re-run in each fresh clone."

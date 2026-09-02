@@ -1,4 +1,4 @@
-name: Cairn ledger check
+name: cAIrn ledger check
 
 # Fails a PR that changes code without updating AI_HANDOFF.md, so cross-agent
 # work stays in sync and nothing is stranded. Apply the 'skip-ledger' label to

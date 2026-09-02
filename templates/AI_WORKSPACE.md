@@ -18,10 +18,10 @@ If a runtime does not automatically read `AGENTS.md`, configure its native
 instruction entry point to load this file. For a plain-text entry point, register
 it with `cairn init --entry-file path/to/instructions.md`; use
 `--adopt-entry-file` instead to preserve an existing instruction file and append
-only Cairn's marked routing block.
+only cAIrn's marked routing block.
 
 Registering or adopting an entry point changes project configuration. Add the
-corresponding `AI_HANDOFF.md` Log entry before committing it; Cairn never
+corresponding `AI_HANDOFF.md` Log entry before committing it; cAIrn never
 invents an actor, summary, or validation result.
 
 Do not add workflow rules here; update AGENTS.md instead. Live Git state and the

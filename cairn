@@ -107,7 +107,7 @@ CREATED=(); UPDATED=(); SKIPPED=(); DRIFT=(); MOVED=(); LEDGER_TOUCHED=0
 # --- optional agent entry files ---------------------------------------------
 # AGENTS.md is the portable contract. Some agent runtimes only load a
 # runtime-specific instruction file, though, so projects can register any
-# repository-relative entry file in .cairn/entry-files. Cairn manages only its
+# repository-relative entry file in .cairn/entry-files. cAIrn manages only its
 # marked block in those files; it never guesses an agent's filename or model.
 ENTRY_BEGIN="<!-- CAIRN-ENTRY:BEGIN"
 ENTRY_END="<!-- CAIRN-ENTRY:END -->"
@@ -123,8 +123,8 @@ valid_entry_file() { # valid_entry_file <repo-relative path>
   case "/$entry/" in
     */./*|*/../*) return 1 ;;
   esac
-  # Never let a configurable pointer replace Cairn's core, a built-in adapter,
-  # Git metadata, hooks, or an installed Cairn script. Fold these names so an
+  # Never let a configurable pointer replace cAIrn's core, a built-in adapter,
+  # Git metadata, hooks, or an installed cAIrn script. Fold these names so an
   # entry remains safe on case-insensitive APFS and Windows filesystems too.
   folded="$(fold_entry_path "$entry")"
   scripts_folded="$(fold_entry_path "$SCRIPTS_DIR")"
@@ -336,7 +336,7 @@ read_entry_file_registry() {
 validate_requested_entry_file() {
   local option="$1" entry="$2"
   valid_entry_file "$entry" || {
-    echo "cairn init: $option needs a safe repository-relative path (not a core Cairn file): $entry" >&2
+    echo "cairn init: $option needs a safe repository-relative path (not a core cAIrn file): $entry" >&2
     exit 2
   }
   entry_file_path_is_safe "$entry" || {
@@ -374,7 +374,7 @@ prepare_entry_files() {
   done
 
   # Fail before changing anything if a registered file has no valid single
-  # Cairn block. --adopt-entry-file only appends to a file with no markers.
+  # cAIrn block. --adopt-entry-file only appends to a file with no markers.
   for entry in "${ENTRY_FILES[@]:-}"; do
     [ -z "$entry" ] && continue
     is_ignored "$entry" && continue
@@ -391,12 +391,12 @@ prepare_entry_files() {
       continue
     fi
     if [ "$CHECK" = "1" ]; then
-      DRIFT+=("$entry (must contain exactly one Cairn entry block)")
+      DRIFT+=("$entry (must contain exactly one cAIrn entry block)")
     else
       if entry_file_has_cairn_marker "$entry"; then
-        entry_file_error "$entry has an invalid Cairn entry block; refusing to overwrite it"
+        entry_file_error "$entry has an invalid cAIrn entry block; refusing to overwrite it"
       fi
-      entry_file_error "$entry has no Cairn entry block; use --adopt-entry-file $entry to preserve it and append one"
+      entry_file_error "$entry has no cAIrn entry block; use --adopt-entry-file $entry to preserve it and append one"
     fi
   done
 }
@@ -417,7 +417,7 @@ register_entry_file() {
   entry_file_is_registered "$entry" && return
   if [ ! -f "$ENTRY_FILE_REGISTRY" ]; then
     mkdir -p "$(dirname "$ENTRY_FILE_REGISTRY")"
-    printf '%s\n' '# Cairn agent entry files — one repository-relative path per line.' > "$ENTRY_FILE_REGISTRY"
+    printf '%s\n' '# cAIrn agent entry files — one repository-relative path per line.' > "$ENTRY_FILE_REGISTRY"
     CREATED+=("$ENTRY_FILE_REGISTRY")
     ENTRY_REGISTRY_REPORTED=1
   fi
@@ -478,7 +478,7 @@ migrate_legacy() {
     UPDATED+=("AI_HANDOFF.md (header script paths; Log left intact)")
     LEDGER_TOUCHED=1
   fi
-  # Older Cairn headers named a fixed set of providers. Replace that header-only
+  # Older cAIrn headers named a fixed set of providers. Replace that header-only
   # wording so existing installs describe the same open protocol as new ones;
   # the append-only Log remains byte-for-byte intact.
   if [ "$CHECK" != "1" ] && [ -f AI_HANDOFF.md ] \
@@ -529,7 +529,7 @@ sync_entry_file() { # sync_entry_file <registered repo-relative path>
 
   if ! entry_file_has_cairn_block "$dest"; then
     if entry_file_is_adopted "$dest" && ! entry_file_has_cairn_marker "$dest"; then
-      if [ "$CHECK" = "1" ]; then DRIFT+=("$dest (missing Cairn entry block)"); rm -f "$tmp"; return; fi
+      if [ "$CHECK" = "1" ]; then DRIFT+=("$dest (missing cAIrn entry block)"); rm -f "$tmp"; return; fi
       out="$(mktemp)"
       if [ -s "$dest" ]; then
         cat "$dest" > "$out"
@@ -538,14 +538,14 @@ sync_entry_file() { # sync_entry_file <registered repo-relative path>
       cat "$tmp" >> "$out"
       replace_entry_file_contents "$dest" "$out"
       rm -f "$tmp" "$out"
-      UPDATED+=("$dest (Cairn entry block appended)")
+      UPDATED+=("$dest (cAIrn entry block appended)")
       return
     fi
     # prepare_entry_files reports this before any normal init write. Keep this
-    # guard for safety if the file changes while Cairn is running.
+    # guard for safety if the file changes while cAIrn is running.
     rm -f "$tmp"
     if [ "$CHECK" = "1" ]; then return; fi
-    entry_file_error "$dest has an invalid Cairn entry block while Cairn was running"
+    entry_file_error "$dest has an invalid cAIrn entry block while cAIrn was running"
   fi
 
   current="$(mktemp)"
@@ -553,7 +553,7 @@ sync_entry_file() { # sync_entry_file <registered repo-relative path>
       'index($0,b){f=1} f{print} f && index($0,e){exit}' "$dest" | sed 's/\r$//' > "$current"
   if cmp -s "$tmp" "$current"; then rm -f "$tmp" "$current"; return; fi
   if [ "$CHECK" = "1" ]; then
-    DRIFT+=("$dest (Cairn entry block differs)")
+    DRIFT+=("$dest (cAIrn entry block differs)")
     rm -f "$tmp" "$current"
     return
   fi
@@ -564,7 +564,7 @@ sync_entry_file() { # sync_entry_file <registered repo-relative path>
     !f { print }' "$dest" > "$out"
   replace_entry_file_contents "$dest" "$out"
   rm -f "$tmp" "$current" "$out"
-  UPDATED+=("$dest (Cairn entry block)")
+  UPDATED+=("$dest (cAIrn entry block)")
 }
 
 seed_file() { # seed_file <template> <dest> — content files: seed once
@@ -656,4 +656,4 @@ if printf '%s\n' "${CREATED[@]:-}" | grep -qx "AGENTS.md"; then
   n=$((n+1))
 fi
 echo "  $n. Commit these files together."; n=$((n+1))
-echo "  $n. Make \"Cairn ledger check\" a required status check in branch protection."
+echo "  $n. Make \"cAIrn ledger check\" a required status check in branch protection."

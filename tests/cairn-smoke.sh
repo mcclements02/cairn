@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Lightweight integration coverage for Cairn's installer and generic entry files.
+# Lightweight integration coverage for cAIrn's installer and generic entry files.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -26,57 +26,57 @@ new_repo() {
 # A path owned by any runtime/model can be registered and stays in sync.
 generic_repo="$TMP_ROOT/generic"
 new_repo "$generic_repo"
-"$CAIRN" init --entry-file .agents/qwen-instructions.md "$generic_repo" >/dev/null
-contains "$generic_repo/.cairn/entry-files" ".agents/qwen-instructions.md"
-contains "$generic_repo/.agents/qwen-instructions.md" "CAIRN-ENTRY:BEGIN"
-contains "$generic_repo/.agents/qwen-instructions.md" "every agent, runtime, model"
+"$CAIRN" init --entry-file .agents/tool-instructions.md "$generic_repo" >/dev/null
+contains "$generic_repo/.cairn/entry-files" ".agents/tool-instructions.md"
+contains "$generic_repo/.agents/tool-instructions.md" "CAIRN-ENTRY:BEGIN"
+contains "$generic_repo/.agents/tool-instructions.md" "every agent, runtime, model"
 contains "$generic_repo/AI_HANDOFF.md" "Actor / runtime / model"
 does_not_contain "$generic_repo/AI_HANDOFF.md" "claude · gemini · chatgpt · copilot"
 "$CAIRN" check "$generic_repo" >/dev/null
 perl -pi -e 's/\n/\r\n/g' "$generic_repo/.cairn/entry-files"
-"$CAIRN" init --entry-file .agents/qwen-instructions.md "$generic_repo" >/dev/null
-registered_count="$(tr -d '\r' < "$generic_repo/.cairn/entry-files" | grep -Fxc '.agents/qwen-instructions.md')"
+"$CAIRN" init --entry-file .agents/tool-instructions.md "$generic_repo" >/dev/null
+registered_count="$(tr -d '\r' < "$generic_repo/.cairn/entry-files" | grep -Fxc '.agents/tool-instructions.md')"
 [ "$registered_count" = "1" ] || fail "CRLF registry duplicated an entry"
-perl -pi -e 's/\n/\r\n/g' "$generic_repo/.agents/qwen-instructions.md"
+perl -pi -e 's/\n/\r\n/g' "$generic_repo/.agents/tool-instructions.md"
 "$CAIRN" check "$generic_repo" >/dev/null
-mv "$generic_repo/.agents/qwen-instructions.md" "$generic_repo/.agents/qwen-instructions.md.saved"
+mv "$generic_repo/.agents/tool-instructions.md" "$generic_repo/.agents/tool-instructions.md.saved"
 if "$CAIRN" check "$generic_repo" >/dev/null 2>&1; then
   fail "check accepted a missing registered entry file"
 fi
-mv "$generic_repo/.agents/qwen-instructions.md.saved" "$generic_repo/.agents/qwen-instructions.md"
+mv "$generic_repo/.agents/tool-instructions.md.saved" "$generic_repo/.agents/tool-instructions.md"
 "$CAIRN" check "$generic_repo" >/dev/null
 
 # A changed managed block is detected, then restored without touching the rest.
-chmod 755 "$generic_repo/.agents/qwen-instructions.md"
-perl -pi -e 's/## Cairn coordination/## Changed heading/' "$generic_repo/.agents/qwen-instructions.md"
+chmod 755 "$generic_repo/.agents/tool-instructions.md"
+perl -pi -e 's/## cAIrn coordination/## Changed heading/' "$generic_repo/.agents/tool-instructions.md"
 if "$CAIRN" check "$generic_repo" >/dev/null 2>&1; then
   fail "check accepted a changed agent entry block"
 fi
 "$CAIRN" init "$generic_repo" >/dev/null
-contains "$generic_repo/.agents/qwen-instructions.md" "## Cairn coordination"
-[ -x "$generic_repo/.agents/qwen-instructions.md" ] || fail "entry-file mode was not preserved"
+contains "$generic_repo/.agents/tool-instructions.md" "## cAIrn coordination"
+[ -x "$generic_repo/.agents/tool-instructions.md" ] || fail "entry-file mode was not preserved"
 "$CAIRN" check "$generic_repo" >/dev/null
 
 # Multiple or malformed managed blocks are drift, never silently ignored.
-cp "$generic_repo/.agents/qwen-instructions.md" "$TMP_ROOT/entry-copy"
-cat "$TMP_ROOT/entry-copy" >> "$generic_repo/.agents/qwen-instructions.md"
+cp "$generic_repo/.agents/tool-instructions.md" "$TMP_ROOT/entry-copy"
+cat "$TMP_ROOT/entry-copy" >> "$generic_repo/.agents/tool-instructions.md"
 if "$CAIRN" check "$generic_repo" >/dev/null 2>&1; then
-  fail "check accepted duplicate Cairn entry blocks"
+  fail "check accepted duplicate cAIrn entry blocks"
 fi
 if "$CAIRN" init "$generic_repo" >/dev/null 2>&1; then
-  fail "init overwrote duplicate Cairn entry blocks"
+  fail "init overwrote duplicate cAIrn entry blocks"
 fi
-cp "$TMP_ROOT/entry-copy" "$generic_repo/.agents/qwen-instructions.md"
+cp "$TMP_ROOT/entry-copy" "$generic_repo/.agents/tool-instructions.md"
 "$CAIRN" check "$generic_repo" >/dev/null
 
 # A writable directory can repair a read-only entry while keeping its mode.
 readonly_repo="$TMP_ROOT/readonly"
 new_repo "$readonly_repo"
 "$CAIRN" init --entry-file .agents/local.md "$readonly_repo" >/dev/null
-perl -pi -e 's/## Cairn coordination/## Old heading/' "$readonly_repo/.agents/local.md"
+perl -pi -e 's/## cAIrn coordination/## Old heading/' "$readonly_repo/.agents/local.md"
 chmod 444 "$readonly_repo/.agents/local.md"
 "$CAIRN" init "$readonly_repo" >/dev/null
-contains "$readonly_repo/.agents/local.md" "## Cairn coordination"
+contains "$readonly_repo/.agents/local.md" "## cAIrn coordination"
 readonly_mode="$(LC_ALL=C ls -ld "$readonly_repo/.agents/local.md" | awk '{print $1}')"
 case "$readonly_mode" in -r--r--r--*) ;; *) fail "entry-file read-only mode was not preserved" ;; esac
 
@@ -188,7 +188,7 @@ new_repo "$malformed_repo"
 mkdir -p "$malformed_repo/.agents"
 printf '%s\n' 'before' 'prefix <!-- CAIRN-ENTRY:BEGIN -->' 'old block' '<!-- CAIRN-ENTRY:END --> suffix' 'after-must-survive' > "$malformed_repo/.agents/bad.md"
 if "$CAIRN" init --adopt-entry-file .agents/bad.md "$malformed_repo" >/dev/null 2>&1; then
-  fail "init accepted embedded Cairn markers"
+  fail "init accepted embedded cAIrn markers"
 fi
 contains "$malformed_repo/.agents/bad.md" "after-must-survive"
 if [ -e "$malformed_repo/.cairn/entry-files" ] || [ -e "$malformed_repo/AGENTS.md" ]; then
@@ -205,12 +205,12 @@ ln -s "$TMP_ROOT/ignored-outside" "$ignored_repo/.agents/local.md"
 "$CAIRN" check "$ignored_repo" >/dev/null
 
 # Runtime registration is covered by the same ledger requirement as any other
-# project change; Cairn does not invent the handoff's factual details.
+# project change; cAIrn does not invent the handoff's factual details.
 handoff_repo="$TMP_ROOT/handoff"
 new_repo "$handoff_repo"
 "$CAIRN" init "$handoff_repo" >/dev/null
 git -C "$handoff_repo" add .
-git -C "$handoff_repo" commit -qm 'Install Cairn'
+git -C "$handoff_repo" commit -qm 'Install cAIrn'
 "$CAIRN" init --entry-file .agents/qwen.md "$handoff_repo" >/dev/null
 git -C "$handoff_repo" add .cairn .agents
 if git -C "$handoff_repo" commit -qm 'Register Qwen runtime' >/dev/null 2>&1; then

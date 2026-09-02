@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cairn CI check — fail if code changed without updating AI_HANDOFF.md.
+# cAIrn CI check — fail if code changed without updating AI_HANDOFF.md.
 # Reads newline-separated changed paths from args or stdin. Mirrors the
 # classification in .githooks/pre-commit so local and CI verdicts agree.
 set -euo pipefail
