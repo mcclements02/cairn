@@ -2,7 +2,8 @@
 # cairn — a shared, append-only ledger for repositories worked by more than one
 # AI coding agent, plus the enforcement that keeps it honest.
 #
-#   cairn init   [--force] [--scripts-dir DIR] [PATH]   install or re-sync a repo
+#   cairn init   [--force] [--scripts-dir DIR] [--entry-file PATH] [--adopt-entry-file PATH] [PATH]
+#                                                        install or re-sync a repo
 #   cairn check  [PATH]                                 report drift; exit 1 if any
 #   cairn status [PATH]                                 cross-worktree stranded work
 #   cairn hooks  [PATH]                                 enable hooks in this clone
@@ -12,7 +13,7 @@ set -euo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATES="$SELF/templates"
 
-usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; }
 
 CMD="${1:-help}"; [ $# -gt 0 ] && shift
 case "$CMD" in
@@ -23,10 +24,17 @@ esac
 
 CHECK=0; [ "$CMD" = "check" ] && CHECK=1
 FORCE=0; SCRIPTS_DIR=""; TARGET=""
+ENTRY_FILE_ARGS=(); ADOPT_ENTRY_FILE_ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --force)       FORCE=1; shift ;;
     --scripts-dir) SCRIPTS_DIR="${2:?--scripts-dir needs a value}"; shift 2 ;;
+    --entry-file)
+      [ "$CMD" = "init" ] || { echo "cairn $CMD: --entry-file is only valid with init" >&2; exit 2; }
+      ENTRY_FILE_ARGS+=("${2:?--entry-file needs a value}"); shift 2 ;;
+    --adopt-entry-file)
+      [ "$CMD" = "init" ] || { echo "cairn $CMD: --adopt-entry-file is only valid with init" >&2; exit 2; }
+      ADOPT_ENTRY_FILE_ARGS+=("${2:?--adopt-entry-file needs a value}"); shift 2 ;;
     -h|--help)     usage; exit 0 ;;
     -*)            echo "cairn $CMD: unknown flag: $1" >&2; exit 2 ;;
     *)             TARGET="$1"; shift ;;
@@ -56,6 +64,8 @@ if [ -z "$SCRIPTS_DIR" ]; then
 fi
 BRANCH="$(git branch --show-current 2>/dev/null)"; [ -z "$BRANCH" ] && BRANCH="main"
 DATE="$(date +%Y-%m-%d)"
+ENTRY_FILE_REGISTRY=".cairn/entry-files"
+ENTRY_FILE_TEMPLATE="$TEMPLATES/AGENT_ENTRY.md"
 
 # Templates are written LF-only (see .gitattributes). Strip any \r anyway, so a
 # zip download or a clone made before those rules still produces working scripts
@@ -93,6 +103,340 @@ is_ignored() {
 }
 
 CREATED=(); UPDATED=(); SKIPPED=(); DRIFT=(); MOVED=(); LEDGER_TOUCHED=0
+
+# --- optional agent entry files ---------------------------------------------
+# AGENTS.md is the portable contract. Some agent runtimes only load a
+# runtime-specific instruction file, though, so projects can register any
+# repository-relative entry file in .cairn/entry-files. Cairn manages only its
+# marked block in those files; it never guesses an agent's filename or model.
+ENTRY_BEGIN="<!-- CAIRN-ENTRY:BEGIN"
+ENTRY_END="<!-- CAIRN-ENTRY:END -->"
+ENTRY_FILES=(); ADOPT_ENTRY_FILES=(); ENTRY_FILE_COLLISIONS=(); ENTRY_REGISTRY_REPORTED=0
+
+fold_entry_path() { printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]'; }
+
+valid_entry_file() { # valid_entry_file <repo-relative path>
+  local entry="$1" folded scripts_folded
+  case "$entry" in
+    ""|/*|-*|\#*|[A-Za-z]:*|*\\*|.|..|*/|*//*|*$'\n'*|*$'\r'*) return 1 ;;
+  esac
+  case "/$entry/" in
+    */./*|*/../*) return 1 ;;
+  esac
+  # Never let a configurable pointer replace Cairn's core, a built-in adapter,
+  # Git metadata, hooks, or an installed Cairn script. Fold these names so an
+  # entry remains safe on case-insensitive APFS and Windows filesystems too.
+  folded="$(fold_entry_path "$entry")"
+  scripts_folded="$(fold_entry_path "$SCRIPTS_DIR")"
+  case "$folded" in
+    .git|.git/*|.cairn|.cairn/*|.githooks|.githooks/*|.github/workflows/cairn.yml|\
+    agents.md|ai_handoff.md|ai_workspace.md|.cairnignore|\
+    claude.md|gemini.md|chatgpt.md|\
+    "$scripts_folded"|"$scripts_folded"/*) return 1 ;;
+  esac
+  return 0
+}
+
+entry_file_path_is_safe() { # reject symlinks and non-directory parent components
+  local entry="$1" part="" component index=0 last_index
+  local IFS='/'
+  local -a components=()
+  read -r -a components <<< "$entry"
+  last_index=$(( ${#components[@]} - 1 ))
+  for component in "${components[@]}"; do
+    part="${part:+$part/}$component"
+    [ -L "$part" ] && return 1
+    if [ "$index" -lt "$last_index" ] && [ -e "$part" ] && [ ! -d "$part" ]; then
+      return 1
+    fi
+    index=$((index + 1))
+  done
+  return 0
+}
+
+entry_file_target_is_usable() { # a managed entry is a regular file, or new
+  [ ! -e "$1" ] || [ -f "$1" ]
+}
+
+entry_file_registry_is_safe() {
+  [ ! -L .cairn ] || return 1
+  [ ! -L "$ENTRY_FILE_REGISTRY" ] || return 1
+  [ ! -e .cairn ] || [ -d .cairn ] || return 1
+  [ ! -e "$ENTRY_FILE_REGISTRY" ] || [ -f "$ENTRY_FILE_REGISTRY" ] || return 1
+}
+
+entry_file_management_requested() {
+  local entry
+  for entry in "${ENTRY_FILE_ARGS[@]:-}" "${ADOPT_ENTRY_FILE_ARGS[@]:-}"; do
+    [ -z "$entry" ] || return 0
+  done
+  return 1
+}
+
+add_entry_file() { # add_entry_file <path> — preserve registry order, de-dupe
+  local entry="$1" known entry_folded known_folded
+  entry_folded="$(fold_entry_path "$entry")"
+  for known in "${ENTRY_FILES[@]:-}"; do
+    [ -z "$known" ] && continue
+    [ "$known" = "$entry" ] && return
+    known_folded="$(fold_entry_path "$known")"
+    if [ "$known_folded" = "$entry_folded" ]; then
+      ENTRY_FILE_COLLISIONS+=("$known <-> $entry")
+      return
+    fi
+  done
+  ENTRY_FILES+=("$entry")
+}
+
+mark_entry_file_for_adoption() {
+  local entry="$1" known
+  for known in "${ADOPT_ENTRY_FILES[@]:-}"; do
+    [ -z "$known" ] && continue
+    [ "$known" = "$entry" ] && return
+  done
+  ADOPT_ENTRY_FILES+=("$entry")
+}
+
+entry_file_is_adopted() {
+  local entry="$1" known
+  for known in "${ADOPT_ENTRY_FILES[@]:-}"; do
+    [ -z "$known" ] && continue
+    [ "$known" = "$entry" ] && return 0
+  done
+  return 1
+}
+
+entry_file_has_cairn_block() { # exactly one complete block on dedicated lines
+  local entry="$1"
+  awk -v b="$ENTRY_BEGIN" -v e="$ENTRY_END" '
+    {
+      line=$0
+      sub(/\r$/, "", line)
+      has_begin=index(line,b)
+      has_end=index(line,e)
+    }
+    has_begin {
+      if (has_begin != 1 || has_end || line !~ /-->$/) invalid=1
+      begins++
+      if (inside || begins > 1) invalid=1
+      inside=1
+    }
+    has_end {
+      if (line != e) invalid=1
+      ends++
+      if (!inside || ends > 1) invalid=1
+      inside=0
+    }
+    END { exit !(begins == 1 && ends == 1 && !inside && !invalid) }' "$entry"
+}
+
+entry_file_has_cairn_marker() {
+  local entry="$1"
+  grep -qF "$ENTRY_BEGIN" "$entry" || grep -qF "$ENTRY_END" "$entry"
+}
+
+entry_file_mode() { # portable numeric mode, including set-id/sticky bits
+  LC_ALL=C ls -ld "$1" | awk '
+    {
+      p=$1; mode=0
+      if (substr(p,2,1)=="r") mode+=256
+      if (substr(p,3,1)=="w") mode+=128
+      c=substr(p,4,1); if (c=="x" || c=="s") mode+=64; if (c=="s" || c=="S") mode+=2048
+      if (substr(p,5,1)=="r") mode+=32
+      if (substr(p,6,1)=="w") mode+=16
+      c=substr(p,7,1); if (c=="x" || c=="s") mode+=8; if (c=="s" || c=="S") mode+=1024
+      if (substr(p,8,1)=="r") mode+=4
+      if (substr(p,9,1)=="w") mode+=2
+      c=substr(p,10,1); if (c=="x" || c=="t") mode+=1; if (c=="t" || c=="T") mode+=512
+      printf "%o", mode
+    }'
+}
+
+replace_entry_file_contents() { # replace <dest> with <prepared file>, preserve mode
+  local dest="$1" source="$2" preserved mode
+  mode="$(entry_file_mode "$dest")"
+  preserved="$(mktemp "$(dirname "$dest")/.cairn-entry.XXXXXX")"
+  if ! cp -p "$dest" "$preserved"; then
+    rm -f "$preserved"
+    entry_file_error "could not preserve metadata for $dest"
+  fi
+  if ! chmod u+w "$preserved"; then
+    rm -f "$preserved"
+    entry_file_error "could not make temporary entry copy writable for $dest"
+  fi
+  if ! cat "$source" > "$preserved"; then
+    rm -f "$preserved"
+    entry_file_error "could not update $dest while preserving its metadata"
+  fi
+  if ! chmod "$mode" "$preserved"; then
+    rm -f "$preserved"
+    entry_file_error "could not restore metadata for $dest"
+  fi
+  if ! mv "$preserved" "$dest"; then
+    rm -f "$preserved"
+    entry_file_error "could not replace $dest"
+  fi
+}
+
+entry_file_error() {
+  echo "x  cairn: $1" >&2
+  exit 1
+}
+
+read_entry_file_registry() {
+  local entry
+  # .cairn is optional project-owned space. Leave it entirely alone unless an
+  # entry registry already exists or this invocation explicitly manages one.
+  if [ ! -e "$ENTRY_FILE_REGISTRY" ] && [ ! -L "$ENTRY_FILE_REGISTRY" ] \
+     && ! entry_file_management_requested; then
+    return 0
+  fi
+  entry_file_registry_is_safe || {
+    if [ "$CHECK" = "1" ]; then
+      DRIFT+=("$ENTRY_FILE_REGISTRY (must be a regular file under a real .cairn directory)")
+      return 0
+    fi
+    entry_file_error "$ENTRY_FILE_REGISTRY must be a regular file under a real .cairn directory"
+  }
+  [ -f "$ENTRY_FILE_REGISTRY" ] || return 0
+  while IFS= read -r entry || [ -n "$entry" ]; do
+    entry="${entry%$'\r'}"
+    case "$entry" in ""|\#*) continue ;; esac
+    if ! valid_entry_file "$entry"; then
+      if [ "$CHECK" = "1" ]; then
+        DRIFT+=("$ENTRY_FILE_REGISTRY (invalid entry: $entry)")
+        continue
+      fi
+      entry_file_error "$ENTRY_FILE_REGISTRY has an invalid entry: $entry"
+    fi
+    # An ignored managed path is intentionally local; do not inspect or follow
+    # its target, matching .cairnignore's no-rewrite/no-drift contract.
+    if is_ignored "$entry"; then
+      add_entry_file "$entry"
+      continue
+    fi
+    if ! entry_file_path_is_safe "$entry"; then
+      if [ "$CHECK" = "1" ]; then
+        DRIFT+=("$ENTRY_FILE_REGISTRY ($entry has an unsafe parent path)")
+        continue
+      fi
+      entry_file_error "$ENTRY_FILE_REGISTRY entry has an unsafe parent path: $entry"
+    fi
+    if ! entry_file_target_is_usable "$entry"; then
+      if [ "$CHECK" = "1" ]; then
+        DRIFT+=("$ENTRY_FILE_REGISTRY ($entry is not a regular file)")
+        continue
+      fi
+      entry_file_error "$ENTRY_FILE_REGISTRY entry is not a regular file: $entry"
+    fi
+    add_entry_file "$entry"
+  done < "$ENTRY_FILE_REGISTRY"
+}
+
+validate_requested_entry_file() {
+  local option="$1" entry="$2"
+  valid_entry_file "$entry" || {
+    echo "cairn init: $option needs a safe repository-relative path (not a core Cairn file): $entry" >&2
+    exit 2
+  }
+  entry_file_path_is_safe "$entry" || {
+    echo "cairn init: $option may not traverse a symlink or non-directory: $entry" >&2
+    exit 2
+  }
+  entry_file_target_is_usable "$entry" || {
+    echo "cairn init: $option must name a regular file or a new path: $entry" >&2
+    exit 2
+  }
+}
+
+prepare_entry_files() {
+  local entry
+  read_entry_file_registry
+  for entry in "${ENTRY_FILE_ARGS[@]:-}"; do
+    [ -z "$entry" ] && continue
+    validate_requested_entry_file "--entry-file" "$entry"
+    add_entry_file "$entry"
+  done
+  for entry in "${ADOPT_ENTRY_FILE_ARGS[@]:-}"; do
+    [ -z "$entry" ] && continue
+    validate_requested_entry_file "--adopt-entry-file" "$entry"
+    add_entry_file "$entry"
+    mark_entry_file_for_adoption "$entry"
+  done
+
+  for entry in "${ENTRY_FILE_COLLISIONS[@]:-}"; do
+    [ -z "$entry" ] && continue
+    if [ "$CHECK" = "1" ]; then
+      DRIFT+=("$ENTRY_FILE_REGISTRY (case-insensitive duplicate: $entry)")
+    else
+      entry_file_error "entry-file paths collide on case-insensitive filesystems: $entry"
+    fi
+  done
+
+  # Fail before changing anything if a registered file has no valid single
+  # Cairn block. --adopt-entry-file only appends to a file with no markers.
+  for entry in "${ENTRY_FILES[@]:-}"; do
+    [ -z "$entry" ] && continue
+    is_ignored "$entry" && continue
+    if ! entry_file_target_is_usable "$entry"; then
+      if [ "$CHECK" = "1" ]; then
+        DRIFT+=("$entry (not a regular file)")
+        continue
+      fi
+      entry_file_error "$entry is not a regular file"
+    fi
+    [ -e "$entry" ] || continue
+    entry_file_has_cairn_block "$entry" && continue
+    if entry_file_is_adopted "$entry" && ! entry_file_has_cairn_marker "$entry"; then
+      continue
+    fi
+    if [ "$CHECK" = "1" ]; then
+      DRIFT+=("$entry (must contain exactly one Cairn entry block)")
+    else
+      if entry_file_has_cairn_marker "$entry"; then
+        entry_file_error "$entry has an invalid Cairn entry block; refusing to overwrite it"
+      fi
+      entry_file_error "$entry has no Cairn entry block; use --adopt-entry-file $entry to preserve it and append one"
+    fi
+  done
+}
+
+entry_file_is_registered() { # compare normalized registry lines (LF or CRLF)
+  local wanted="$1" entry
+  [ -f "$ENTRY_FILE_REGISTRY" ] || return 1
+  while IFS= read -r entry || [ -n "$entry" ]; do
+    entry="${entry%$'\r'}"
+    [ "$entry" = "$wanted" ] && return 0
+  done < "$ENTRY_FILE_REGISTRY"
+  return 1
+}
+
+register_entry_file() {
+  local entry="$1"
+  entry_file_registry_is_safe || entry_file_error "$ENTRY_FILE_REGISTRY must be a regular file under a real .cairn directory"
+  entry_file_is_registered "$entry" && return
+  if [ ! -f "$ENTRY_FILE_REGISTRY" ]; then
+    mkdir -p "$(dirname "$ENTRY_FILE_REGISTRY")"
+    printf '%s\n' '# Cairn agent entry files — one repository-relative path per line.' > "$ENTRY_FILE_REGISTRY"
+    CREATED+=("$ENTRY_FILE_REGISTRY")
+    ENTRY_REGISTRY_REPORTED=1
+  fi
+  printf '%s\n' "$entry" >> "$ENTRY_FILE_REGISTRY"
+  if [ "$ENTRY_REGISTRY_REPORTED" = "0" ]; then
+    UPDATED+=("$ENTRY_FILE_REGISTRY")
+    ENTRY_REGISTRY_REPORTED=1
+  fi
+}
+
+register_requested_entry_files() {
+  local entry
+  for entry in "${ENTRY_FILE_ARGS[@]:-}"; do
+    [ -z "$entry" ] || register_entry_file "$entry"
+  done
+  for entry in "${ADOPT_ENTRY_FILE_ARGS[@]:-}"; do
+    [ -z "$entry" ] || register_entry_file "$entry"
+  done
+}
 
 # --- migration from the pre-rename layout ------------------------------------
 # Repos installed before the rename carry ai-sync-* names. Move them rather than
@@ -134,8 +478,27 @@ migrate_legacy() {
     UPDATED+=("AI_HANDOFF.md (header script paths; Log left intact)")
     LEDGER_TOUCHED=1
   fi
+  # Older Cairn headers named a fixed set of providers. Replace that header-only
+  # wording so existing installs describe the same open protocol as new ones;
+  # the append-only Log remains byte-for-byte intact.
+  if [ "$CHECK" != "1" ] && [ -f AI_HANDOFF.md ] \
+     && { sed -n '1,/^## Log/p' AI_HANDOFF.md | grep -qF "claude · gemini · chatgpt · copilot" \
+          || sed -n '1,/^## Log/p' AI_HANDOFF.md | grep -qF "| Branch | Worktree | Agent | Status | Summary | Updated |"; }; then
+    perl -pi -e '
+      BEGIN { $in_header = 1 }
+      $in_header = 0 if /^## Log/;
+      if ($in_header) {
+        s/AI agent\*\* \(claude · gemini · chatgpt · copilot\)\./AI agent, runtime, model, and human collaborator**./g;
+        s/^\| Branch \| Worktree \| Agent \| Status \| Summary \| Updated \|$/| Branch | Worktree | Actor \/ runtime \/ model | Status | Summary | Updated |/;
+        s/^\|--------\|----------\|-------\|--------\|---------\|---------\|$/|--------|----------|-------------------------|--------|---------|---------|/;
+      }' AI_HANDOFF.md
+    UPDATED+=("AI_HANDOFF.md (header actor wording; Log left intact)")
+    LEDGER_TOUCHED=1
+  fi
 }
+prepare_entry_files
 migrate_legacy
+[ "$CHECK" = "1" ] || register_requested_entry_files
 
 # --- file sync ---------------------------------------------------------------
 sync_file() { # sync_file <template> <dest> [executable]
@@ -150,6 +513,58 @@ sync_file() { # sync_file <template> <dest> [executable]
   if cmp -s "$tmp" "$dest"; then rm -f "$tmp"; return; fi
   if [ "$CHECK" = "1" ]; then DRIFT+=("$dest (differs)"); rm -f "$tmp"; return; fi
   mv "$tmp" "$dest"; [ -n "$exec_bit" ] && chmod +x "$dest"; UPDATED+=("$dest")
+}
+
+sync_entry_file() { # sync_entry_file <registered repo-relative path>
+  local dest="$1" tmp current out
+  if is_ignored "$dest"; then SKIPPED+=("$dest (local override)"); return; fi
+  entry_file_path_is_safe "$dest" || entry_file_error "$dest has an unsafe parent path"
+  entry_file_target_is_usable "$dest" || entry_file_error "$dest is not a regular file"
+  tmp="$(mktemp)"; render "$ENTRY_FILE_TEMPLATE" > "$tmp"
+
+  if [ ! -e "$dest" ]; then
+    if [ "$CHECK" = "1" ]; then DRIFT+=("$dest (missing)"); rm -f "$tmp"; return; fi
+    mkdir -p "$(dirname "$dest")"; mv "$tmp" "$dest"; CREATED+=("$dest"); return
+  fi
+
+  if ! entry_file_has_cairn_block "$dest"; then
+    if entry_file_is_adopted "$dest" && ! entry_file_has_cairn_marker "$dest"; then
+      if [ "$CHECK" = "1" ]; then DRIFT+=("$dest (missing Cairn entry block)"); rm -f "$tmp"; return; fi
+      out="$(mktemp)"
+      if [ -s "$dest" ]; then
+        cat "$dest" > "$out"
+        printf '\n' >> "$out"
+      fi
+      cat "$tmp" >> "$out"
+      replace_entry_file_contents "$dest" "$out"
+      rm -f "$tmp" "$out"
+      UPDATED+=("$dest (Cairn entry block appended)")
+      return
+    fi
+    # prepare_entry_files reports this before any normal init write. Keep this
+    # guard for safety if the file changes while Cairn is running.
+    rm -f "$tmp"
+    if [ "$CHECK" = "1" ]; then return; fi
+    entry_file_error "$dest has an invalid Cairn entry block while Cairn was running"
+  fi
+
+  current="$(mktemp)"
+  awk -v b="$ENTRY_BEGIN" -v e="$ENTRY_END" \
+      'index($0,b){f=1} f{print} f && index($0,e){exit}' "$dest" | sed 's/\r$//' > "$current"
+  if cmp -s "$tmp" "$current"; then rm -f "$tmp" "$current"; return; fi
+  if [ "$CHECK" = "1" ]; then
+    DRIFT+=("$dest (Cairn entry block differs)")
+    rm -f "$tmp" "$current"
+    return
+  fi
+  out="$(mktemp)"
+  awk -v b="$ENTRY_BEGIN" -v e="$ENTRY_END" -v repl="$tmp" '
+    index($0,b){ while ((getline l < repl) > 0) print l; close(repl); f=1; next }
+    f && index($0,e){f=0; next}
+    !f { print }' "$dest" > "$out"
+  replace_entry_file_contents "$dest" "$out"
+  rm -f "$tmp" "$current" "$out"
+  UPDATED+=("$dest (Cairn entry block)")
 }
 
 seed_file() { # seed_file <template> <dest> — content files: seed once
@@ -168,6 +583,9 @@ sync_file "$TEMPLATES/AI_WORKSPACE.md"            "AI_WORKSPACE.md"
 sync_file "$TEMPLATES/CLAUDE.md"                  "CLAUDE.md"
 sync_file "$TEMPLATES/GEMINI.md"                  "GEMINI.md"
 sync_file "$TEMPLATES/CHATGPT.md"                 "CHATGPT.md"
+for entry_file in "${ENTRY_FILES[@]:-}"; do
+  [ -z "$entry_file" ] || sync_entry_file "$entry_file"
+done
 [ "$LEDGER_TOUCHED" = "1" ] || seed_file "$TEMPLATES/AI_HANDOFF.md" "AI_HANDOFF.md"
 
 # AGENTS.md: full skeleton when absent; otherwise only the marked block is

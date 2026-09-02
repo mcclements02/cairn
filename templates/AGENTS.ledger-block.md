@@ -2,14 +2,15 @@
 ## Project State Ledger (Cross-Agent Sync)
 
 `AI_HANDOFF.md` is the shared project ledger for in-flight work across every
-worktree, branch, and agent (claude · gemini · chatgpt · copilot). It holds
-**state**; this file holds **rules**.
+worktree, branch, agent/runtime/model, and human collaborator. It holds
+**state**; this file holds **rules**. The ledger's actor/runtime/model value is
+free text, never a supported-agent list.
 
 - Before starting any code task, read `AI_HANDOFF.md` to see what other branches
   and worktrees are doing. Do not duplicate, overwrite, or strand their work.
 - Whenever a change touches code, update `AI_HANDOFF.md` in the **same change**:
-  append a Log entry (date · branch · agent · files · validation · status ·
-  next) and refresh your branch's row in Active Work.
+  append a Log entry (date · branch · actor/runtime/model · files · validation ·
+  status · next) and refresh your branch's row in Active Work.
 - Stage and commit `AI_HANDOFF.md` **together with** the code, so the state flows
   through the branch and survives merges. A merge conflict in the Log means two
   agents diverged — resolve by keeping both entries, never by dropping one.

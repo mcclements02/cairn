@@ -6,11 +6,11 @@
 A cross-agent coordination protocol for repositories worked by more than one AI
 coding agent — and a one-command installer that adds it to any repo.
 
-When Claude, Codex, Gemini and Copilot all have write access to the same
-project, the failure mode isn't bad code. It's **stranded work**: an agent
-finishes something on a branch nobody else knows about, a second agent
-re-implements it, a third rewrites the first one's fix. Chat context doesn't
-survive the session, and no agent can read another's.
+When any coding agent — hosted, local, self-run, or backed by Llama, Qwen, or
+another model — has write access to the same project, the failure mode isn't bad
+code. It's **stranded work**: one agent finishes something on a branch nobody
+else knows about, another re-implements it, a third rewrites the first one's
+fix. Chat context doesn't survive the session, and no agent can read another's.
 
 Cairn fixes that with a single rule, enforced mechanically:
 
@@ -27,7 +27,8 @@ cd /path/to/your/repo && ~/.cairn/cairn init
 ```
 
 ```
-cairn init   [--force] [--scripts-dir DIR] [PATH]   install or re-sync a repo
+cairn init   [--force] [--scripts-dir DIR] [--entry-file PATH] [--adopt-entry-file PATH] [PATH]
+                                                    install or re-sync a repo
 cairn check  [PATH]                                 report drift; exit 1 if any
 cairn status [PATH]                                 cross-worktree stranded work
 cairn hooks  [PATH]                                 enable hooks in this clone
@@ -43,15 +44,39 @@ The protocol's whole design rests on one separation:
 | File | Holds | Lifecycle |
 |------|-------|-----------|
 | `AGENTS.md` | **Rules** — branch ownership, safe editing, validation ladder, handoff requirements | Edited deliberately; mostly stable |
-| `AI_HANDOFF.md` | **State** — what is in flight, on which branch, by which agent, validated how | Updated with *every* code change |
+| `AI_HANDOFF.md` | **State** — what is in flight, on which branch, by which actor/runtime/model, validated how | Updated with *every* code change |
 
 Mixing the two is why "just put it in the prompt file" fails: rules get buried
 under status, status goes stale, and agents stop trusting either.
 
-Everything else routes to those two. `CLAUDE.md`, `GEMINI.md`, `CHATGPT.md` and
-`AI_WORKSPACE.md` are **pointers only** — each is 2–5 lines that say "read
-AGENTS.md". Provider-specific instruction files are where drift breeds; keeping
-them empty of rules means there is exactly one authority per repo.
+Everything else routes to those two. `AI_WORKSPACE.md` and the bundled
+compatibility adapters (`CLAUDE.md`, `GEMINI.md`, and `CHATGPT.md`) are
+**pointers only** — they do not define a supported-agent list. Runtime-specific
+instruction files are where drift breeds; keeping them empty of rules means
+there is exactly one authority per repo.
+
+`AGENTS.md` is the portable contract. A model family does not determine an
+instruction-file convention, so configure any runtime that does not already
+read `AGENTS.md` to load it from the repository root. For a plain-text
+runtime-specific entry point, register any repository-relative path without
+teaching Cairn about the runtime or model:
+
+```sh
+# Creates and keeps a generic Cairn routing block in this entry file.
+cairn init --entry-file .agents/qwen-instructions.md
+
+# Preserves an existing instruction file and appends only Cairn's marked block.
+cairn init --adopt-entry-file .agents/local-runner.md
+```
+
+Registered paths live in `.cairn/entry-files`, so future `cairn init` and
+`cairn check` runs keep the same entry points in sync. Cairn never discovers or
+overwrites arbitrary instruction files: a runtime's filename and syntax remain
+the operator's choice.
+
+Registering or adopting an entry point is a project change. Before committing
+that configuration, add the corresponding `AI_HANDOFF.md` Log entry; Cairn does
+not fabricate an actor, summary, or validation result on an agent's behalf.
 
 ## The ledger
 
@@ -60,8 +85,10 @@ them empty of rules means there is exactly one authority per repo.
 **Active Work** — one row per in-flight branch/worktree. Different branches own
 different rows, so concurrent edits merge cleanly instead of conflicting.
 
-**Log** — append-only, newest on top. Each entry records date · branch · agent ·
-files · validation · status · next.
+**Log** — append-only, newest on top. Each entry records date · branch · actor /
+runtime / model · files · validation · status · next. That identifier is free
+text, so `qwen2.5-coder`, `llama-3.3@ollama`, `codex`, or a human teammate are
+all equally valid.
 
 > A merge conflict in the Log means two agents diverged. Resolve it by keeping
 > **both** entries — never by dropping one. The conflict *is* the signal.
@@ -90,7 +117,9 @@ toes you're about to step on.
 AGENTS.md                        rules      seeded once; only the marked ledger block is re-synced
 AI_HANDOFF.md                    state      seeded once; never overwritten
 AI_WORKSPACE.md                  pointer
-CLAUDE.md / GEMINI.md / CHATGPT.md  pointers
+CLAUDE.md / GEMINI.md / CHATGPT.md  bundled compatibility pointers
+.cairn/entry-files               optional registry for arbitrary runtime entry files
+<registered entry files>         optional Cairn routing blocks; only marked blocks are managed
 .githooks/pre-commit             local enforcement
 scripts/cairn-hooks.sh       enable hooks (once per clone)
 scripts/cairn-status.sh        cross-worktree stranded-work view

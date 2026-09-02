@@ -4,6 +4,7 @@
 # for every clone, on every platform.
 cairn                 text eol=lf
 *.sh                  text eol=lf
+.cairn/entry-files    text eol=lf
 .githooks/*           text eol=lf
 templates/githooks/*  text eol=lf
 

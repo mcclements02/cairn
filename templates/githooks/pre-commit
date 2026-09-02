@@ -26,7 +26,7 @@ if [ "$code_staged" -eq 1 ] && [ "$ledger_staged" -eq 0 ]; then
   x  Cairn: code is staged but AI_HANDOFF.md is not.
 
      All code must update the shared project ledger so every worktree,
-     branch, and agent (claude / gemini / chatgpt / copilot) stays in sync
+     branch, agent/runtime/model, and human collaborator stays in sync
      and nothing is stranded.
 
      Fix:   add a Log entry to AI_HANDOFF.md, then  git add AI_HANDOFF.md
