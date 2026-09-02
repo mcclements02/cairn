@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AI-SYNC install — enable the versioned pre-commit hook for this clone.
+# cairn-hooks —  enable the versioned pre-commit hook for this clone.
 # Run once per clone. core.hooksPath is shared by all linked worktrees.
 set -euo pipefail
 
@@ -14,10 +14,10 @@ if [ -n "$existing" ] && [ "$existing" != ".githooks" ]; then
   [ "${AISYNC_FORCE:-0}" = "1" ] || exit 0
 fi
 
-chmod +x .githooks/* __SCRIPTS_DIR__/ai-sync-*.sh 2>/dev/null || true
+chmod +x .githooks/* __SCRIPTS_DIR__/cairn-*.sh 2>/dev/null || true
 git config core.hooksPath .githooks
 
-echo "AI-SYNC installed for $(basename "$ROOT"):"
+echo "Cairn installed for $(basename "$ROOT"):"
 echo "  core.hooksPath = $(git config --get core.hooksPath)"
 echo "  hook           = .githooks/pre-commit"
 echo "Applies to all linked worktrees. Re-run in each fresh clone."

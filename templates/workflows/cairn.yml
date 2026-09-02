@@ -1,4 +1,4 @@
-name: AI-SYNC ledger check
+name: Cairn ledger check
 
 # Fails a PR that changes code without updating AI_HANDOFF.md, so cross-agent
 # work stays in sync and nothing is stranded. Apply the 'skip-ledger' label to
@@ -26,8 +26,8 @@ jobs:
           changed="$(git diff --name-only "origin/${BASE_REF}...HEAD")"
           echo "Changed files in this PR:"
           printf '%s\n' "$changed" | sed 's/^/  /'
-          printf '%s\n' "$changed" | bash __SCRIPTS_DIR__/ai-sync-ci-check.sh
+          printf '%s\n' "$changed" | bash __SCRIPTS_DIR__/cairn-check.sh
       - name: Bypass notice
         if: ${{ contains(github.event.pull_request.labels.*.name, 'skip-ledger') }}
         run: |
-          echo "ai-sync skip-ledger label present; ledger check bypassed (auditable)."
+          echo "cairn skip-ledger label present; ledger check bypassed (auditable)."

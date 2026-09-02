@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# AI-SYNC pre-commit — enforce that code changes also update the project ledger.
-# Managed by __SCRIPTS_DIR__/ai-sync-install.sh (sets core.hooksPath=.githooks).
+# Cairn pre-commit — enforce that code changes also update the project ledger.
+# Managed by __SCRIPTS_DIR__/cairn-hooks.sh (sets core.hooksPath=.githooks).
 # Bypass intentionally for docs-only commits:  git commit --no-verify
 set -euo pipefail
 
@@ -23,7 +23,7 @@ done <<< "$staged"
 if [ "$code_staged" -eq 1 ] && [ "$ledger_staged" -eq 0 ]; then
   cat >&2 <<'MSG'
 
-  x  AI-SYNC: code is staged but AI_HANDOFF.md is not.
+  x  Cairn: code is staged but AI_HANDOFF.md is not.
 
      All code must update the shared project ledger so every worktree,
      branch, and agent (claude / gemini / chatgpt / copilot) stays in sync

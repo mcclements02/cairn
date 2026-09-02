@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+# cairn — a shared, append-only ledger for repositories worked by more than one
+# AI coding agent, plus the enforcement that keeps it honest.
+#
+#   cairn init   [--force] [--scripts-dir DIR] [PATH]   install or re-sync a repo
+#   cairn check  [PATH]                                 report drift; exit 1 if any
+#   cairn status [PATH]                                 cross-worktree stranded work
+#   cairn hooks  [PATH]                                 enable hooks in this clone
+#   cairn help
+set -euo pipefail
+
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TEMPLATES="$SELF/templates"
+
+usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; }
+
+CMD="${1:-help}"; [ $# -gt 0 ] && shift
+case "$CMD" in
+  init|check|status|hooks) ;;
+  help|-h|--help)          usage; exit 0 ;;
+  *) echo "cairn: unknown command '$CMD'" >&2; echo >&2; usage >&2; exit 2 ;;
+esac
+
+CHECK=0; [ "$CMD" = "check" ] && CHECK=1
+FORCE=0; SCRIPTS_DIR=""; TARGET=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --force)       FORCE=1; shift ;;
+    --scripts-dir) SCRIPTS_DIR="${2:?--scripts-dir needs a value}"; shift 2 ;;
+    -h|--help)     usage; exit 0 ;;
+    -*)            echo "cairn $CMD: unknown flag: $1" >&2; exit 2 ;;
+    *)             TARGET="$1"; shift ;;
+  esac
+done
+
+[ -d "$TEMPLATES" ] || { echo "x  templates/ not found next to $0" >&2; exit 1; }
+
+cd "${TARGET:-.}"
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+  echo "x  not a git repository: $(pwd)" >&2; exit 1; }
+cd "$ROOT"
+
+# --- context -----------------------------------------------------------------
+PROJECT_NAME="$(basename "$ROOT")"
+if [ -z "$SCRIPTS_DIR" ]; then
+  # A case-insensitive filesystem (macOS APFS, Windows NTFS) makes scripts/ and
+  # Scripts/ the same inode, so `[ -d Scripts ]` is true even when the real
+  # dirent is `scripts`. Ask git what casing it tracks, then fall back to find,
+  # which string-compares the actual dirent. Never test with `-d`.
+  SCRIPTS_DIR="$(git ls-files | sed -n 's|^\([Ss]cripts\)/.*|\1|p' | head -1)"
+  if [ -z "$SCRIPTS_DIR" ]; then
+    SCRIPTS_DIR="$(find . -maxdepth 1 -type d \( -name scripts -o -name Scripts \) \
+                   -exec basename {} \; 2>/dev/null | head -1)"
+  fi
+  [ -z "$SCRIPTS_DIR" ] && SCRIPTS_DIR="scripts"
+fi
+BRANCH="$(git branch --show-current 2>/dev/null)"; [ -z "$BRANCH" ] && BRANCH="main"
+DATE="$(date +%Y-%m-%d)"
+
+# Templates are written LF-only (see .gitattributes). Strip any \r anyway, so a
+# zip download or a clone made before those rules still produces working scripts
+# instead of files bash rejects with "invalid option name".
+render() { # render <template> -> stdout
+  sed -e 's/\r$//' \
+      -e "s|__SCRIPTS_DIR__|$SCRIPTS_DIR|g" \
+      -e "s|__PROJECT_NAME__|$PROJECT_NAME|g" \
+      -e "s|__BRANCH__|$BRANCH|g" \
+      -e "s|__DATE__|$DATE|g" "$1"
+}
+
+# --- delegating subcommands --------------------------------------------------
+# status/hooks run the repo's own installed copy when present, so behaviour
+# matches what CI and other clones execute. Fall back to the template.
+run_installed() { # run_installed <basename>
+  local name="$1" tmp
+  if [ -f "$SCRIPTS_DIR/$name" ]; then bash "$SCRIPTS_DIR/$name"; return; fi
+  tmp="$(mktemp)"; render "$TEMPLATES/scripts/$name" > "$tmp"
+  bash "$tmp"; local rc=$?; rm -f "$tmp"; return $rc
+}
+case "$CMD" in
+  status) run_installed cairn-status.sh; exit $? ;;
+  hooks)  run_installed cairn-hooks.sh;  exit $? ;;
+esac
+
+# --- ignore list -------------------------------------------------------------
+# .cairnignore lists managed paths this repo has deliberately customized.
+# Overwriting a considered local change is worse than leaving it drifted, so
+# ignored paths are neither rewritten nor reported as drift.
+IGNORE_FILE=".cairnignore"
+is_ignored() {
+  [ -f "$IGNORE_FILE" ] || return 1
+  sed -e 's/#.*//' -e 's/[[:space:]]*$//' "$IGNORE_FILE" | grep -qxF "$1"
+}
+
+CREATED=(); UPDATED=(); SKIPPED=(); DRIFT=(); MOVED=(); LEDGER_TOUCHED=0
+
+# --- migration from the pre-rename layout ------------------------------------
+# Repos installed before the rename carry ai-sync-* names. Move them rather than
+# leaving two parallel installs, and use git mv so history follows the file.
+migrate_legacy() {
+  local from to
+  for pair in \
+    "$SCRIPTS_DIR/ai-sync-install.sh:$SCRIPTS_DIR/cairn-hooks.sh" \
+    "$SCRIPTS_DIR/ai-sync-status.sh:$SCRIPTS_DIR/cairn-status.sh" \
+    "$SCRIPTS_DIR/ai-sync-ci-check.sh:$SCRIPTS_DIR/cairn-check.sh" \
+    ".github/workflows/ai-sync.yml:.github/workflows/cairn.yml" \
+    ".ai-sync-ignore:.cairnignore"
+  do
+    from="${pair%%:*}"; to="${pair##*:}"
+    [ -f "$from" ] || continue
+    [ -f "$to" ] && continue
+    if [ "$CHECK" = "1" ]; then DRIFT+=("$from (legacy name; run 'cairn init')"); continue; fi
+    if git ls-files --error-unmatch "$from" >/dev/null 2>&1; then
+      git mv "$from" "$to"
+    else
+      mv "$from" "$to"
+    fi
+    MOVED+=("$from -> $to")
+  done
+  # The ledger's header points at the old script paths. Retarget ONLY the header:
+  # everything from "## Log" down is append-only history, and a tool that enforces
+  # append-only must not rewrite it. Stale paths inside past entries are correct —
+  # that IS what the command was called when the entry was written.
+  if [ "$CHECK" != "1" ] && [ -f AI_HANDOFF.md ] \
+     && sed -n '1,/^## Log/p' AI_HANDOFF.md | grep -q "ai-sync-"; then
+    perl -pi -e '
+      BEGIN { $in_header = 1 }
+      $in_header = 0 if /^## Log/;
+      if ($in_header) {
+        s|ai-sync-status\.sh|cairn-status.sh|g;
+        s|ai-sync-install\.sh|cairn-hooks.sh|g;
+        s|ai-sync-ci-check\.sh|cairn-check.sh|g;
+      }' AI_HANDOFF.md
+    UPDATED+=("AI_HANDOFF.md (header script paths; Log left intact)")
+    LEDGER_TOUCHED=1
+  fi
+}
+migrate_legacy
+
+# --- file sync ---------------------------------------------------------------
+sync_file() { # sync_file <template> <dest> [executable]
+  local tpl="$1" dest="$2" exec_bit="${3:-}" tmp
+  if is_ignored "$dest"; then SKIPPED+=("$dest (local override)"); return; fi
+  tmp="$(mktemp)"; render "$tpl" > "$tmp"
+  if [ ! -f "$dest" ]; then
+    if [ "$CHECK" = "1" ]; then DRIFT+=("$dest (missing)"); rm -f "$tmp"; return; fi
+    mkdir -p "$(dirname "$dest")"; mv "$tmp" "$dest"
+    [ -n "$exec_bit" ] && chmod +x "$dest"; CREATED+=("$dest"); return
+  fi
+  if cmp -s "$tmp" "$dest"; then rm -f "$tmp"; return; fi
+  if [ "$CHECK" = "1" ]; then DRIFT+=("$dest (differs)"); rm -f "$tmp"; return; fi
+  mv "$tmp" "$dest"; [ -n "$exec_bit" ] && chmod +x "$dest"; UPDATED+=("$dest")
+}
+
+seed_file() { # seed_file <template> <dest> — content files: seed once
+  local tpl="$1" dest="$2"
+  if [ -f "$dest" ] && [ "$FORCE" != "1" ]; then SKIPPED+=("$dest (exists)"); return; fi
+  if [ "$CHECK" = "1" ]; then [ -f "$dest" ] || DRIFT+=("$dest (missing)"); return; fi
+  render "$tpl" > "$dest"; CREATED+=("$dest")
+}
+
+sync_file "$TEMPLATES/githooks/pre-commit"        ".githooks/pre-commit"          x
+sync_file "$TEMPLATES/scripts/cairn-hooks.sh"     "$SCRIPTS_DIR/cairn-hooks.sh"   x
+sync_file "$TEMPLATES/scripts/cairn-status.sh"    "$SCRIPTS_DIR/cairn-status.sh"  x
+sync_file "$TEMPLATES/scripts/cairn-check.sh"     "$SCRIPTS_DIR/cairn-check.sh"   x
+sync_file "$TEMPLATES/workflows/cairn.yml"        ".github/workflows/cairn.yml"
+sync_file "$TEMPLATES/AI_WORKSPACE.md"            "AI_WORKSPACE.md"
+sync_file "$TEMPLATES/CLAUDE.md"                  "CLAUDE.md"
+sync_file "$TEMPLATES/GEMINI.md"                  "GEMINI.md"
+sync_file "$TEMPLATES/CHATGPT.md"                 "CHATGPT.md"
+[ "$LEDGER_TOUCHED" = "1" ] || seed_file "$TEMPLATES/AI_HANDOFF.md" "AI_HANDOFF.md"
+
+# AGENTS.md: full skeleton when absent; otherwise only the marked block is
+# replaced, so hand-written architecture and command sections survive a re-sync.
+BEGIN_MARK="<!-- CAIRN-LEDGER:BEGIN"
+END_MARK="<!-- CAIRN-LEDGER:END -->"
+LEGACY_BEGIN="<!-- AI-SYNC-LEDGER:BEGIN"
+LEGACY_END="<!-- AI-SYNC-LEDGER:END -->"
+if is_ignored "AGENTS.md"; then
+  SKIPPED+=("AGENTS.md (local override)")
+elif [ ! -f AGENTS.md ]; then
+  seed_file "$TEMPLATES/AGENTS.skeleton.md" "AGENTS.md"
+else
+  # Accept the pre-rename marker so an existing block is upgraded, not duplicated.
+  if grep -qF "$LEGACY_BEGIN" AGENTS.md && ! grep -qF "$BEGIN_MARK" AGENTS.md; then
+    if [ "$CHECK" = "1" ]; then DRIFT+=("AGENTS.md (legacy ledger markers)")
+    else perl -pi -e 's|AI-SYNC-LEDGER|CAIRN-LEDGER|g' AGENTS.md; fi
+  fi
+  block="$(mktemp)"; render "$TEMPLATES/AGENTS.ledger-block.md" > "$block"
+  if grep -qF "$BEGIN_MARK" AGENTS.md; then
+    current="$(mktemp)"
+    awk -v b="$BEGIN_MARK" -v e="$END_MARK" \
+        'index($0,b){f=1} f{print} index($0,e){f=0}' AGENTS.md > "$current"
+    if cmp -s "$block" "$current"; then :
+    elif [ "$CHECK" = "1" ]; then DRIFT+=("AGENTS.md (ledger block differs)")
+    else
+      out="$(mktemp)"
+      awk -v b="$BEGIN_MARK" -v e="$END_MARK" -v repl="$block" '
+        index($0,b){ while ((getline l < repl) > 0) print l; close(repl); f=1; next }
+        f && index($0,e){ f=0; next }
+        !f { print }' AGENTS.md > "$out"
+      mv "$out" AGENTS.md; UPDATED+=("AGENTS.md (ledger block)")
+    fi
+    rm -f "$current"
+  elif [ "$CHECK" = "1" ]; then DRIFT+=("AGENTS.md (no ledger block)")
+  else
+    printf '\n' >> AGENTS.md; cat "$block" >> AGENTS.md
+    UPDATED+=("AGENTS.md (ledger block appended)")
+  fi
+  rm -f "$block"
+fi
+
+# --- report ------------------------------------------------------------------
+echo "== cairn $CMD: $PROJECT_NAME =="
+echo "   root        $ROOT"
+echo "   branch      $BRANCH"
+echo "   scripts dir $SCRIPTS_DIR/"
+echo
+
+if [ "$CHECK" = "1" ]; then
+  if [ ${#DRIFT[@]} -eq 0 ]; then echo "   in sync — no drift."; exit 0; fi
+  echo "   DRIFT (${#DRIFT[@]}):"; printf '     - %s\n' "${DRIFT[@]}"; exit 1
+fi
+
+[ ${#MOVED[@]}   -gt 0 ] && { echo "   migrated (${#MOVED[@]}):"; printf '     > %s\n' "${MOVED[@]}"; }
+[ ${#CREATED[@]} -gt 0 ] && { echo "   created (${#CREATED[@]}):";  printf '     + %s\n' "${CREATED[@]}"; }
+[ ${#UPDATED[@]} -gt 0 ] && { echo "   updated (${#UPDATED[@]}):";  printf '     ~ %s\n' "${UPDATED[@]}"; }
+[ ${#SKIPPED[@]} -gt 0 ] && { echo "   kept (${#SKIPPED[@]}):";     printf '     = %s\n' "${SKIPPED[@]}"; }
+[ $(( ${#CREATED[@]} + ${#UPDATED[@]} + ${#MOVED[@]} )) -eq 0 ] && echo "   already in sync — nothing written."
+
+echo
+bash "$SCRIPTS_DIR/cairn-hooks.sh"
+echo
+echo "Next:"
+n=1
+if printf '%s\n' "${CREATED[@]:-}" | grep -qx "AGENTS.md"; then
+  echo "  $n. Fill the TODO sections in AGENTS.md (boundary / commands / architecture / validation)."
+  n=$((n+1))
+fi
+echo "  $n. Commit these files together."; n=$((n+1))
+echo "  $n. Make \"Cairn ledger check\" a required status check in branch protection."
