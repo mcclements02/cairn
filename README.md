@@ -6,11 +6,12 @@
 A cross-agent coordination protocol for repositories worked by more than one AI
 coding agent — and a one-command installer that adds it to any repo.
 
-When any coding agent — hosted, local, self-run, or backed by Llama, Qwen, or
-another model — has write access to the same project, the failure mode isn't bad
-code. It's **stranded work**: one agent finishes something on a branch nobody
-else knows about, another re-implements it, a third rewrites the first one's
-fix. Chat context doesn't survive the session, and no agent can read another's.
+When more than one coding agent has write access to the same project — hosted
+or local, commercial or open-weight, autonomous or human-driven — the failure
+mode isn't bad code. It's **stranded work**: one agent finishes something on a
+branch nobody else knows about, another re-implements it, a third rewrites the
+first one's fix. Chat context doesn't survive the session, and no agent can read
+another's.
 
 cAIrn fixes that with a single rule, enforced mechanically:
 
@@ -58,11 +59,26 @@ The protocol's whole design rests on one separation:
 Mixing the two is why "just put it in the prompt file" fails: rules get buried
 under status, status goes stale, and agents stop trusting either.
 
-Everything else routes to those two. `AI_WORKSPACE.md` and the bundled
-compatibility adapters (`CLAUDE.md`, `GEMINI.md`, and `CHATGPT.md`) are
-**pointers only** — they do not define a supported-agent list. Runtime-specific
-instruction files are where drift breeds; keeping them empty of rules means
-there is exactly one authority per repo.
+Everything else routes to those two. `AI_WORKSPACE.md` and the bundled root-file
+shims are **pointers only** — two to five lines that say "read `AGENTS.md`".
+
+Cairn ships three of those shims because several tools look for a specific
+filename at the repository root and will not find `AGENTS.md` on their own. They
+are a convenience, not a supported-agent list, and Cairn neither detects nor
+requires the tools they are named for. If they don't match your setup, list them
+in `.cairnignore` before the first `cairn init` and they are never created:
+
+```
+# .cairnignore — decline the bundled shims
+CLAUDE.md
+GEMINI.md
+CHATGPT.md
+```
+
+Then register whatever your tools actually read with `--entry-file` or
+`--adopt-entry-file`, below. Per-tool instruction files are where drift breeds,
+so keeping every one of them empty of rules means there is exactly one authority
+per repo.
 
 `AGENTS.md` is the portable contract. A model family does not determine an
 instruction-file convention, so configure any runtime that does not already
@@ -72,10 +88,10 @@ teaching Cairn about the runtime or model:
 
 ```sh
 # Creates and keeps a generic Cairn routing block in this entry file.
-cairn init --entry-file .agents/qwen-instructions.md
+cairn init --entry-file .agents/instructions.md
 
 # Preserves an existing instruction file and appends only Cairn's marked block.
-cairn init --adopt-entry-file .agents/local-runner.md
+cairn init --adopt-entry-file docs/agent-onboarding.md
 ```
 
 Registered paths live in `.cairn/entry-files`, so future `cairn init` and
@@ -94,10 +110,11 @@ not fabricate an actor, summary, or validation result on an agent's behalf.
 **Active Work** — one row per in-flight branch/worktree. Different branches own
 different rows, so concurrent edits merge cleanly instead of conflicting.
 
-**Log** — append-only, newest on top. Each entry records date · branch · actor /
-runtime / model · files · validation · status · next. That identifier is free
-text, so `qwen2.5-coder`, `llama-3.3@ollama`, `codex`, or a human teammate are
-all equally valid.
+**Log** — append-only, newest on top. Each entry records date · branch · actor ·
+files · validation · status · next. The actor is free text and Cairn never
+validates it: a model name, a runtime, a CI job, a seat like `reviewer`, or a
+human teammate are all equally valid. Use whatever your team can attribute work
+to six months from now.
 
 > A merge conflict in the Log means two agents diverged. Resolve it by keeping
 > **both** entries — never by dropping one. The conflict *is* the signal.
@@ -126,7 +143,8 @@ toes you're about to step on.
 AGENTS.md                        rules      seeded once; only the marked ledger block is re-synced
 AI_HANDOFF.md                    state      seeded once; never overwritten
 AI_WORKSPACE.md                  pointer
-CLAUDE.md / GEMINI.md / CHATGPT.md  bundled compatibility pointers
+<root-file shims>                three pointer files named for the common root-file
+                                 conventions; identical 2-line contents, opt out via .cairnignore
 .cairn/entry-files               optional registry for arbitrary runtime entry files
 <registered entry files>         optional Cairn routing blocks; only marked blocks are managed
 .githooks/pre-commit             local enforcement
