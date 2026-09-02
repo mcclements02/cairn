@@ -1,6 +1,6 @@
-# Cairn
+# cAIrn
 
-> A cairn is a stack of stones left by earlier travelers to mark the trail for
+> cAIrn is a stack of stones left by earlier travelers to mark the trail for
 > whoever comes next. You add one stone. You don't rearrange the others.
 
 A cross-agent coordination protocol for repositories worked by more than one AI
@@ -12,14 +12,14 @@ code. It's **stranded work**: one agent finishes something on a branch nobody
 else knows about, another re-implements it, a third rewrites the first one's
 fix. Chat context doesn't survive the session, and no agent can read another's.
 
-Cairn fixes that with a single rule, enforced mechanically:
+cAIrn fixes that with a single rule, enforced mechanically:
 
 > **Every commit that touches code must also update the shared ledger.**
 
 State lives in the repo, on the branch, in the diff — so it merges, survives
 handoffs, and is readable by whichever agent shows up next.
 
-## Install
+## Install 
 
 ```sh
 git clone https://github.com/mcclements02/cairn.git ~/.cairn
