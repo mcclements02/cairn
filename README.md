@@ -107,11 +107,11 @@ replaced, so hand-written architecture and command sections survive upgrades.
 
 ## Protecting a deliberate local change
 
-Some repos customize a managed file on purpose. A trading repo in the fleet
-extends the hook so runtime evidence files (`forward_test*.json`,
-`ml_events_*.jsonl`, …) don't count as code — an evidence checkpoint carries no
-ledger entry by design, and without the exemption the operator learns to reach
-for `--no-verify`, which is how a guard stops guarding.
+Some repos customize a managed file on purpose. A project that commits runtime
+artifacts — model outputs, captured fixtures, evidence checkpoints — may need
+the hook to stop counting those as code, because such a commit carries no ledger
+entry by design. Without the exemption the operator learns to reach for
+`--no-verify`, which is how a guard stops guarding.
 
 Overwriting a considered change like that is worse than leaving it drifted. List
 the path in `.cairnignore` at the repo root:
