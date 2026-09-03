@@ -1,8 +1,8 @@
 name: cAIrn ledger check
 
 # Fails a PR that changes code without updating AI_HANDOFF.md, so cross-agent
-# work stays in sync and nothing is stranded. Apply the 'skip-ledger' label to
-# bypass for a docs-only PR (auditable, unlike a local --no-verify).
+# work stays in sync and nothing is stranded. Docs-only PRs already pass
+# naturally; there is no label-based bypass for code changes.
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
@@ -18,7 +18,6 @@ jobs:
         with:
           fetch-depth: 0
       - name: Ledger check
-        if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-ledger') }}
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
@@ -26,8 +25,14 @@ jobs:
           changed="$(git diff --name-only "origin/${BASE_REF}...HEAD")"
           echo "Changed files in this PR:"
           printf '%s\n' "$changed" | sed 's/^/  /'
-          printf '%s\n' "$changed" | bash __SCRIPTS_DIR__/cairn-check.sh
-      - name: Bypass notice
-        if: ${{ contains(github.event.pull_request.labels.*.name, 'skip-ledger') }}
-        run: |
-          echo "cairn skip-ledger label present; ledger check bypassed (auditable)."
+          # Use the base branch's classifier when it exists. A PR must not be
+          # able to change the checker and use that altered copy to approve its
+          # own code-only change. The fallback supports the first cAIrn install.
+          if git cat-file -e "origin/${BASE_REF}:__SCRIPTS_DIR__/cairn-check.sh"; then
+            checker="$(mktemp)"
+            git show "origin/${BASE_REF}:__SCRIPTS_DIR__/cairn-check.sh" > "$checker"
+            printf '%s\n' "$changed" | bash "$checker"
+            rm -f "$checker"
+          else
+            printf '%s\n' "$changed" | bash __SCRIPTS_DIR__/cairn-check.sh
+          fi

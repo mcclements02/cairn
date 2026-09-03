@@ -39,13 +39,16 @@ Bash or WSL; see [Platforms](#platforms).
 ```
 cairn init   [--force] [--scripts-dir DIR] [--entry-file PATH] [--adopt-entry-file PATH] [PATH]
                                                     install or re-sync a repo
-cairn check  [PATH]                                 report drift; exit 1 if any
-cairn status [PATH]                                 cross-worktree stranded work
-cairn hooks  [PATH]                                 enable hooks in this clone
+cairn check  [--scripts-dir DIR] [PATH]             report drift; exit 1 if any
+cairn status [--scripts-dir DIR] [PATH]             cross-worktree stranded work
+cairn hooks  [--scripts-dir DIR] [PATH]             enable hooks in this clone
+cairn resources [PATH]                              host-local RAM/process snapshot (read-only)
 cairn help
 ```
 
-Re-running is safe and is how you re-sync a drifted repo.
+Re-running is safe and is how you re-sync cAIrn-owned files. It never overwrites
+the append-only ledger or an existing native instruction file without an explicit
+`--force` request for that convenience pointer/hook.
 
 ## The two-file split
 
@@ -65,8 +68,9 @@ shims are **pointers only** — two to five lines that say "read `AGENTS.md`".
 cAIrn ships three of those shims because several tools look for a specific
 filename at the repository root and will not find `AGENTS.md` on their own. They
 are a convenience, not a supported-agent list, and cAIrn neither detects nor
-requires the tools they are named for. If they don't match your setup, list them
-in `.cairnignore` before the first `cairn init` and they are never created:
+requires the tools they are named for. A missing shim is created; an existing
+native instruction file is preserved. To decline a missing convenience shim,
+list it in `.cairnignore`:
 
 ```
 # .cairnignore — decline the bundled shims
@@ -93,6 +97,12 @@ cairn init --entry-file .agents/instructions.md
 # Preserves an existing instruction file and appends only cAIrn's marked block.
 cairn init --adopt-entry-file docs/agent-onboarding.md
 ```
+
+The same explicit adoption path works for an existing root convention such as
+`CLAUDE.md`: `cairn init --adopt-entry-file CLAUDE.md` preserves its content and
+appends only cAIrn's marked routing block. Use `--force` only when you intend to
+replace one of cAIrn's convenience pointers or the local pre-commit hook; it
+never replaces `AI_HANDOFF.md` history.
 
 Registered paths live in `.cairn/entry-files`, so future `cairn init` and
 `cairn check` runs keep the same entry points in sync. cAIrn never discovers or
@@ -124,18 +134,26 @@ to six months from now.
 A convention no one enforces is a convention no one follows. Three layers:
 
 **Local** — `.githooks/pre-commit` rejects a commit that stages code without
-staging `AI_HANDOFF.md`. Markdown and text are exempt, so docs work is
-unblocked. Bypass with `git commit --no-verify`.
+staging `AI_HANDOFF.md`, rejects code deletions without a ledger update, and
+refuses to delete, replace, or empty the ledger's required sections. Markdown
+and text are exempt, so docs work is unblocked. Bypass with `git commit
+--no-verify`.
 
 **CI** — `.github/workflows/cairn.yml` runs the same classification on every
-PR. The local bypass is invisible to reviewers; the CI bypass is the
-**`skip-ledger`** label — deliberate, attributable, and visible in the PR
-timeline.
+PR and verifies the ledger remains a regular tracked file with its `Active Work`
+and `Log` sections. Docs-only PRs pass naturally; no label can bypass a
+code-only change.
 
 **Visibility** — `cairn-status.sh` reports every worktree, its dirty count,
 every local branch not merged into the base, and the three newest ledger
 entries. It performs no git mutations. Run it before starting work to see whose
 toes you're about to step on.
+
+**Host diagnostics** — `cairn resources` is an opt-in, read-only local snapshot
+of physical RAM, memory availability/swap, and the top visible processes by RSS.
+It is model- and vendor-neutral and never writes a handoff entry. macOS and Linux
+are supported; under WSL it reports the Linux VM rather than all Windows-host
+memory.
 
 ## What gets installed
 
@@ -144,22 +162,26 @@ AGENTS.md                        rules      seeded once; only the marked ledger 
 AI_HANDOFF.md                    state      seeded once; never overwritten
 AI_WORKSPACE.md                  pointer
 <root-file shims>                three pointer files named for the common root-file
-                                 conventions; identical 2-line contents, opt out via .cairnignore
+                                 conventions; created only when absent, existing files preserved
 .cairn/entry-files               optional registry for arbitrary runtime entry files
 <registered entry files>         optional cAIrn routing blocks; only marked blocks are managed
 .githooks/pre-commit             local enforcement
 scripts/cairn-hooks.sh       enable hooks (once per clone)
 scripts/cairn-status.sh        cross-worktree stranded-work view
 scripts/cairn-check.sh      CI mirror of the hook's classification
+scripts/cairn-resources.sh  host-local RAM/process snapshot
 .github/workflows/cairn.yml    PR enforcement
+.gitattributes                  cAIrn-managed LF-protection block, merged with local rules
 .cairnignore                  optional; paths this repo customizes on purpose
 ```
 
 **Managed files** are rewritten from `templates/` on every run — that's what
-makes re-running a repair. **Content files** (`AGENTS.md`, `AI_HANDOFF.md`) are
-seeded once and never clobbered. In an existing `AGENTS.md`, only the region
-between `<!-- cAIrn-LEDGER:BEGIN -->` and `<!-- cAIrn-LEDGER:END -->` is
-replaced, so hand-written architecture and command sections survive upgrades.
+makes re-running a repair. Existing native instruction files and pre-commit
+hooks are preserved unless explicitly forced. **Content files** (`AGENTS.md`,
+`AI_HANDOFF.md`) are seeded once and never clobbered. In an existing `AGENTS.md`,
+only one complete region between `<!-- cAIrn-LEDGER:BEGIN -->` and
+`<!-- cAIrn-LEDGER:END -->` is replaced; malformed or duplicate markers are
+refused rather than risking surrounding user content.
 
 ## Protecting a deliberate local change
 
@@ -190,8 +212,8 @@ It does not run in `cmd.exe` or PowerShell directly. The git hook it installs is
 invoked by git itself, which uses its bundled `sh` on Windows, so hooks work
 regardless of which shell you drive git from.
 
-Line endings are pinned to LF via `.gitattributes`, and the installer strips
-`\r` from templates on the way out. Without both, a default Windows checkout
+The installer merges a cAIrn-owned LF-protection block into `.gitattributes`, and
+strips `\r` from templates on the way out. Without both, a default Windows checkout
 (`core.autocrlf=true`) rewrites the scripts to CRLF and bash dies on the stray
 carriage return with `set: pipefail: invalid option name`.
 
@@ -233,7 +255,9 @@ which makes detection flip-flop and rewrite files on every run.
 `core.hooksPath=.githooks`, which is local git config — it does not travel with
 a clone. Every fresh clone needs it run once. It is shared across all linked
 worktrees, and it refuses to stomp an existing `core.hooksPath` (husky, etc.)
-unless you pass `AISYNC_FORCE=1`.
+unless you pass `CAIRN_FORCE=1` (the older `AISYNC_FORCE=1` remains accepted for
+compatibility). If `.githooks/pre-commit` already belongs to the repository,
+cAIrn preserves it and asks you to deliberately chain or force replacement.
 
 **The hook is a reminder, not a gate.** `--no-verify` exists and agents will
 find it. The CI check is the real boundary; the hook just moves the correction

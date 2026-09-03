@@ -152,6 +152,116 @@ if [ -e "$invalid_repo/.cairn/entry-files" ] || [ -e "$invalid_repo/AGENTS.md" ]
   fail "case-insensitive duplicate left a partial installation"
 fi
 
+# A registered path cannot also become another registered path's parent.
+entry_tree_collision_repo="$TMP_ROOT/entry-tree-collision"
+new_repo "$entry_tree_collision_repo"
+if "$CAIRN" init --entry-file .agents/qwen --entry-file .agents/qwen/instructions.md "$entry_tree_collision_repo" >/dev/null 2>&1; then
+  fail "init accepted an entry-file parent/child collision"
+fi
+if [ -e "$entry_tree_collision_repo/.cairn/entry-files" ] || [ -e "$entry_tree_collision_repo/AGENTS.md" ]; then
+  fail "entry-file parent/child collision left a partial installation"
+fi
+
+# A custom scripts directory is constrained to a real repo-relative directory.
+scripts_dir_repo="$TMP_ROOT/scripts-dir"
+new_repo "$scripts_dir_repo"
+"$CAIRN" init --scripts-dir tooling/cairn "$scripts_dir_repo" >/dev/null
+[ -x "$scripts_dir_repo/tooling/cairn/cairn-resources.sh" ] || fail "resources script was not installed in custom scripts dir"
+contains "$scripts_dir_repo/.gitattributes" "tooling/cairn/cairn-*.sh text eol=lf"
+"$CAIRN" check --scripts-dir tooling/cairn "$scripts_dir_repo" >/dev/null
+outside_scripts="$TMP_ROOT/outside-scripts"
+unsafe_scripts_repo="$TMP_ROOT/unsafe-scripts-dir"
+new_repo "$unsafe_scripts_repo"
+if "$CAIRN" init --scripts-dir "$outside_scripts" "$unsafe_scripts_repo" >/dev/null 2>&1; then
+  fail "init accepted an absolute scripts directory"
+fi
+if [ -e "$outside_scripts" ] || [ -e "$unsafe_scripts_repo/AGENTS.md" ]; then
+  fail "unsafe scripts directory caused an external or partial write"
+fi
+core_collision_scripts_repo="$TMP_ROOT/core-collision-scripts-dir"
+new_repo "$core_collision_scripts_repo"
+if "$CAIRN" init --scripts-dir AI_HANDOFF.md "$core_collision_scripts_repo" >/dev/null 2>&1; then
+  fail "init accepted a scripts directory that collides with the ledger"
+fi
+if [ -e "$core_collision_scripts_repo/AI_HANDOFF.md" ] || [ -e "$core_collision_scripts_repo/AGENTS.md" ]; then
+  fail "core-collision scripts directory left a partial installation"
+fi
+
+# The documented PATH symlink resolves templates from the real cAIrn install.
+symlink_bin="$TMP_ROOT/bin"
+mkdir -p "$symlink_bin"
+ln -s "$CAIRN" "$symlink_bin/cairn"
+symlink_install_repo="$TMP_ROOT/symlink-install"
+new_repo "$symlink_install_repo"
+"$symlink_bin/cairn" init "$symlink_install_repo" >/dev/null
+[ -f "$symlink_install_repo/AI_HANDOFF.md" ] || fail "PATH symlink install did not find templates"
+
+# Existing runtime instructions and pre-commit hooks are user-owned by default.
+native_repo="$TMP_ROOT/native"
+new_repo "$native_repo"
+mkdir -p "$native_repo/.githooks"
+printf '%s\n' 'Keep this native instruction.' > "$native_repo/CLAUDE.md"
+printf '%s\n' '#!/usr/bin/env bash' 'echo existing-hook' > "$native_repo/.githooks/pre-commit"
+"$CAIRN" init "$native_repo" >/dev/null
+contains "$native_repo/CLAUDE.md" "Keep this native instruction."
+contains "$native_repo/.githooks/pre-commit" "existing-hook"
+"$CAIRN" init --adopt-entry-file CLAUDE.md "$native_repo" >/dev/null
+contains "$native_repo/CLAUDE.md" "Keep this native instruction."
+contains "$native_repo/CLAUDE.md" "CAIRN-ENTRY:BEGIN"
+
+# An old exact cAIrn hook upgrades once, while arbitrary hooks above are left alone.
+legacy_hook_repo="$TMP_ROOT/legacy-hook"
+new_repo "$legacy_hook_repo"
+"$CAIRN" init "$legacy_hook_repo" >/dev/null
+sed 's|__SCRIPTS_DIR__|scripts|g' "$ROOT/templates/githooks/pre-commit.legacy" > "$legacy_hook_repo/.githooks/pre-commit"
+"$CAIRN" init "$legacy_hook_repo" >/dev/null
+contains "$legacy_hook_repo/.githooks/pre-commit" "CAIRN-HOOK:BEGIN"
+
+# cAIrn merges its LF rules rather than replacing a project's .gitattributes.
+attrs_repo="$TMP_ROOT/attrs"
+new_repo "$attrs_repo"
+printf '%s\n' '*.snap binary' > "$attrs_repo/.gitattributes"
+"$CAIRN" init "$attrs_repo" >/dev/null
+contains "$attrs_repo/.gitattributes" "*.snap binary"
+contains "$attrs_repo/.gitattributes" "CAIRN-GITATTRIBUTES:BEGIN"
+contains "$attrs_repo/.gitattributes" ".cairn/entry-files text eol=lf"
+perl -pi -e 's/\n/\r\n/g' "$attrs_repo/.gitattributes"
+"$CAIRN" check "$attrs_repo" >/dev/null
+
+# A malformed AGENTS block refuses before any install writes can occur.
+bad_agents_repo="$TMP_ROOT/bad-agents"
+new_repo "$bad_agents_repo"
+printf '%s\n' 'before' '<!-- CAIRN-LEDGER:BEGIN (managed) -->' 'after-must-survive' > "$bad_agents_repo/AGENTS.md"
+if "$CAIRN" init "$bad_agents_repo" >/dev/null 2>&1; then
+  fail "init accepted a malformed AGENTS ledger block"
+fi
+contains "$bad_agents_repo/AGENTS.md" "after-must-survive"
+if [ -e "$bad_agents_repo/AI_HANDOFF.md" ] || [ -e "$bad_agents_repo/.gitattributes" ]; then
+  fail "malformed AGENTS block left partial installation files"
+fi
+
+# --force never erases append-only ledger history.
+force_repo="$TMP_ROOT/force"
+new_repo "$force_repo"
+"$CAIRN" init "$force_repo" >/dev/null
+printf '%s\n' '### preserved-force-sentinel' '- **Changed:** must remain.' >> "$force_repo/AI_HANDOFF.md"
+"$CAIRN" init --force "$force_repo" >/dev/null
+contains "$force_repo/AI_HANDOFF.md" "preserved-force-sentinel"
+
+# resources is an opt-in snapshot and has no repository side effects.
+resources_before="$(git -C "$generic_repo" status --porcelain)"
+"$CAIRN" resources "$generic_repo" > "$TMP_ROOT/resources"
+contains "$TMP_ROOT/resources" "host-local snapshot only"
+contains "$TMP_ROOT/resources" "top visible processes by resident memory"
+resources_after="$(git -C "$generic_repo" status --porcelain)"
+[ "$resources_before" = "$resources_after" ] || fail "resources changed repository state"
+resource_trust_repo="$TMP_ROOT/resource-trust"
+new_repo "$resource_trust_repo"
+"$CAIRN" init "$resource_trust_repo" >/dev/null
+printf '%s\n' 'echo UNTRUSTED-RESOURCE-SCRIPT-RAN' >> "$resource_trust_repo/scripts/cairn-resources.sh"
+"$CAIRN" resources "$resource_trust_repo" > "$TMP_ROOT/resources-trust"
+does_not_contain "$TMP_ROOT/resources-trust" "UNTRUSTED-RESOURCE-SCRIPT-RAN"
+
 # A repository's unrelated .cairn file is left alone until entry-file support
 # is explicitly requested.
 incidental_cairn_repo="$TMP_ROOT/incidental-cairn"
@@ -181,6 +291,47 @@ fi
 if [ -e "$TMP_ROOT/registry-outside" ] || [ -e "$symlink_repo/AGENTS.md" ]; then
   fail "symlinked registry caused an external or partial write"
 fi
+
+# Legacy migration is preflighted too: it may never follow a symlinked parent
+# or mutate files outside the repository.
+legacy_symlink_repo="$TMP_ROOT/legacy-symlink"
+legacy_outside="$TMP_ROOT/legacy-outside"
+new_repo "$legacy_symlink_repo"
+mkdir -p "$legacy_outside/workflows"
+printf '%s\n' 'legacy workflow must survive' > "$legacy_outside/workflows/ai-sync.yml"
+ln -s "$legacy_outside" "$legacy_symlink_repo/.github"
+if "$CAIRN" init "$legacy_symlink_repo" >/dev/null 2>&1; then
+  fail "init followed a symlinked legacy workflow parent"
+fi
+[ -f "$legacy_outside/workflows/ai-sync.yml" ] || fail "legacy migration moved an external file"
+[ ! -e "$legacy_outside/workflows/cairn.yml" ] || fail "legacy migration wrote an external destination"
+[ ! -e "$legacy_symlink_repo/AGENTS.md" ] || fail "unsafe legacy migration left partial installation"
+
+# A symlinked sync destination is rejected before any independent managed file
+# is created, even when there is no legacy source to migrate.
+sync_symlink_repo="$TMP_ROOT/sync-symlink"
+sync_outside="$TMP_ROOT/sync-outside"
+new_repo "$sync_symlink_repo"
+mkdir -p "$sync_outside"
+ln -s "$sync_outside" "$sync_symlink_repo/.github"
+if "$CAIRN" init "$sync_symlink_repo" >/dev/null 2>&1; then
+  fail "init accepted a symlinked workflow destination"
+fi
+for path in .gitattributes .githooks scripts AI_HANDOFF.md AGENTS.md; do
+  [ ! -e "$sync_symlink_repo/$path" ] || fail "unsafe sync destination left partial install path: $path"
+done
+
+ledger_symlink_repo="$TMP_ROOT/ledger-symlink"
+ledger_outside="$TMP_ROOT/ledger-outside.md"
+new_repo "$ledger_symlink_repo"
+printf '%s\n' 'ai-sync-status.sh outside ledger must survive' > "$ledger_outside"
+ln -s "$ledger_outside" "$ledger_symlink_repo/AI_HANDOFF.md"
+if "$CAIRN" init "$ledger_symlink_repo" >/dev/null 2>&1; then
+  fail "init accepted a symlinked ledger"
+fi
+[ -L "$ledger_symlink_repo/AI_HANDOFF.md" ] || fail "init replaced a symlinked ledger"
+contains "$ledger_outside" "outside ledger must survive"
+[ ! -e "$ledger_symlink_repo/AGENTS.md" ] || fail "unsafe ledger left partial installation"
 
 # Markers embedded in surrounding text are refused before replacement can erase it.
 malformed_repo="$TMP_ROOT/malformed"
@@ -219,6 +370,62 @@ fi
 printf '%s\n' '' '### 2026-09-02 · main · qwen' '- **Changed:** Registered runtime entry point.' '- **Validation:** smoke test.' '- **Status:** done.' '- **Next:** none.' >> "$handoff_repo/AI_HANDOFF.md"
 git -C "$handoff_repo" add AI_HANDOFF.md
 git -C "$handoff_repo" commit -qm 'Record runtime registration'
+
+# A code deletion needs a ledger update locally, just like a code addition.
+printf '%s\n' 'console.log("tracked");' > "$handoff_repo/tracked.js"
+printf '%s\n' '' '### 2026-09-02 · main · qwen' '- **Changed:** Added tracked fixture.' '- **Validation:** smoke test.' '- **Status:** done.' '- **Next:** none.' >> "$handoff_repo/AI_HANDOFF.md"
+git -C "$handoff_repo" add tracked.js AI_HANDOFF.md
+git -C "$handoff_repo" commit -qm 'Add tracked fixture'
+rm "$handoff_repo/tracked.js"
+git -C "$handoff_repo" add -u
+if git -C "$handoff_repo" commit -qm 'Delete tracked fixture without ledger' >/dev/null 2>&1; then
+  fail "hook accepted a code deletion without a ledger update"
+fi
+
+# A deleted or type-changed ledger cannot pass the local hook or CI classifier.
+deleted_ledger_repo="$TMP_ROOT/deleted-ledger"
+new_repo "$deleted_ledger_repo"
+"$CAIRN" init "$deleted_ledger_repo" >/dev/null
+git -C "$deleted_ledger_repo" add .
+git -C "$deleted_ledger_repo" commit -qm 'Install cAIrn'
+git -C "$deleted_ledger_repo" rm -q AI_HANDOFF.md
+if git -C "$deleted_ledger_repo" commit -qm 'Delete ledger' >/dev/null 2>&1; then
+  fail "hook accepted a deleted ledger"
+fi
+if printf '%s\n' 'AI_HANDOFF.md' | (cd "$deleted_ledger_repo" && bash scripts/cairn-check.sh) >/dev/null 2>&1; then
+  fail "CI classifier accepted a deleted staged ledger"
+fi
+
+type_changed_ledger_repo="$TMP_ROOT/type-changed-ledger"
+new_repo "$type_changed_ledger_repo"
+"$CAIRN" init "$type_changed_ledger_repo" >/dev/null
+git -C "$type_changed_ledger_repo" add .
+git -C "$type_changed_ledger_repo" commit -qm 'Install cAIrn'
+rm "$type_changed_ledger_repo/AI_HANDOFF.md"
+ln -s "$TMP_ROOT/not-a-ledger" "$type_changed_ledger_repo/AI_HANDOFF.md"
+git -C "$type_changed_ledger_repo" add -A
+if git -C "$type_changed_ledger_repo" commit -qm 'Replace ledger with symlink' >/dev/null 2>&1; then
+  fail "hook accepted a symlinked ledger"
+fi
+
+# A regular file is not enough: an empty handoff is drift and cannot accompany code.
+empty_ledger_repo="$TMP_ROOT/empty-ledger"
+new_repo "$empty_ledger_repo"
+"$CAIRN" init "$empty_ledger_repo" >/dev/null
+git -C "$empty_ledger_repo" add .
+git -C "$empty_ledger_repo" commit -qm 'Install cAIrn'
+: > "$empty_ledger_repo/AI_HANDOFF.md"
+printf '%s\n' 'console.log("requires handoff");' > "$empty_ledger_repo/requires-handoff.js"
+if "$CAIRN" check "$empty_ledger_repo" >/dev/null 2>&1; then
+  fail "check accepted an empty handoff"
+fi
+git -C "$empty_ledger_repo" add AI_HANDOFF.md requires-handoff.js
+if git -C "$empty_ledger_repo" commit -qm 'Empty handoff with code' >/dev/null 2>&1; then
+  fail "hook accepted an empty handoff with code"
+fi
+if printf '%s\n' AI_HANDOFF.md requires-handoff.js | (cd "$empty_ledger_repo" && bash scripts/cairn-check.sh) >/dev/null 2>&1; then
+  fail "CI classifier accepted an empty handoff with code"
+fi
 
 # Older headers are made neutral without changing append-only log history.
 migrate_repo="$TMP_ROOT/migrate"

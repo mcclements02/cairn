@@ -4,20 +4,32 @@
 #
 #   cairn init   [--force] [--scripts-dir DIR] [--entry-file PATH] [--adopt-entry-file PATH] [PATH]
 #                                                        install or re-sync a repo
-#   cairn check  [PATH]                                 report drift; exit 1 if any
-#   cairn status [PATH]                                 cross-worktree stranded work
-#   cairn hooks  [PATH]                                 enable hooks in this clone
+#   cairn check  [--scripts-dir DIR] [PATH]             report drift; exit 1 if any
+#   cairn status [--scripts-dir DIR] [PATH]             cross-worktree stranded work
+#   cairn hooks  [--scripts-dir DIR] [PATH]             enable hooks in this clone
+#   cairn resources [PATH]                              host-local RAM/process snapshot (read-only)
 #   cairn help
 set -euo pipefail
 
-SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve a PATH-installed symlink too. `ln -s ~/.cairn/cairn /usr/local/bin/cairn`
+# is the documented install path, and macOS lacks GNU readlink -f.
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  SOURCE_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  LINK_TARGET="$(readlink "$SOURCE")"
+  case "$LINK_TARGET" in
+    /*) SOURCE="$LINK_TARGET" ;;
+    *)  SOURCE="$SOURCE_DIR/$LINK_TARGET" ;;
+  esac
+done
+SELF="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 TEMPLATES="$SELF/templates"
 
-usage() { sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; }
 
 CMD="${1:-help}"; [ $# -gt 0 ] && shift
 case "$CMD" in
-  init|check|status|hooks) ;;
+  init|check|status|hooks|resources) ;;
   help|-h|--help)          usage; exit 0 ;;
   *) echo "cairn: unknown command '$CMD'" >&2; echo >&2; usage >&2; exit 2 ;;
 esac
@@ -27,17 +39,25 @@ FORCE=0; SCRIPTS_DIR=""; TARGET=""
 ENTRY_FILE_ARGS=(); ADOPT_ENTRY_FILE_ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    --force)       FORCE=1; shift ;;
-    --scripts-dir) SCRIPTS_DIR="${2:?--scripts-dir needs a value}"; shift 2 ;;
+    --force)
+      [ "$CMD" = "init" ] || { echo "cairn $CMD: --force is only valid with init" >&2; exit 2; }
+      FORCE=1; shift ;;
+    --scripts-dir)
+      [ -n "${2:-}" ] || { echo "cairn $CMD: --scripts-dir needs a value" >&2; exit 2; }
+      SCRIPTS_DIR="$2"; shift 2 ;;
     --entry-file)
       [ "$CMD" = "init" ] || { echo "cairn $CMD: --entry-file is only valid with init" >&2; exit 2; }
-      ENTRY_FILE_ARGS+=("${2:?--entry-file needs a value}"); shift 2 ;;
+      [ -n "${2:-}" ] || { echo "cairn init: --entry-file needs a value" >&2; exit 2; }
+      ENTRY_FILE_ARGS+=("$2"); shift 2 ;;
     --adopt-entry-file)
       [ "$CMD" = "init" ] || { echo "cairn $CMD: --adopt-entry-file is only valid with init" >&2; exit 2; }
-      ADOPT_ENTRY_FILE_ARGS+=("${2:?--adopt-entry-file needs a value}"); shift 2 ;;
+      [ -n "${2:-}" ] || { echo "cairn init: --adopt-entry-file needs a value" >&2; exit 2; }
+      ADOPT_ENTRY_FILE_ARGS+=("$2"); shift 2 ;;
     -h|--help)     usage; exit 0 ;;
     -*)            echo "cairn $CMD: unknown flag: $1" >&2; exit 2 ;;
-    *)             TARGET="$1"; shift ;;
+    *)
+      [ -z "$TARGET" ] || { echo "cairn $CMD: only one repository path may be supplied" >&2; exit 2; }
+      TARGET="$1"; shift ;;
   esac
 done
 
@@ -67,29 +87,89 @@ DATE="$(date +%Y-%m-%d)"
 ENTRY_FILE_REGISTRY=".cairn/entry-files"
 ENTRY_FILE_TEMPLATE="$TEMPLATES/AGENT_ENTRY.md"
 
+# --scripts-dir is rendered into scripts, workflow YAML, and .gitattributes,
+# so it must be a boring, repo-contained directory rather than a shell or Git
+# attributes pattern. This also prevents `../` and absolute writes escaping the
+# repository during init.
+valid_scripts_dir() {
+  local dir="$1" folded
+  case "$dir" in
+    ""|/*|-*|\#*|[A-Za-z]:*|*\\*|.|..|*/|*//*|*$'\n'*|*$'\r'*|*[!A-Za-z0-9._/-]*) return 1 ;;
+  esac
+  case "/$dir/" in */./*|*/../*) return 1 ;; esac
+  folded="$(printf '%s' "$dir" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+  case "$folded" in
+    .git|.git/*|.cairn|.cairn/*|.githooks|.githooks/*|.github|.github/*) return 1 ;;
+    agents.md|agents.md/*|ai_handoff.md|ai_handoff.md/*|ai_workspace.md|ai_workspace.md/*|\
+    claude.md|claude.md/*|gemini.md|gemini.md/*|chatgpt.md|chatgpt.md/*|\
+    .cairnignore|.cairnignore/*|.gitattributes|.gitattributes/*) return 1 ;;
+  esac
+  return 0
+}
+
+scripts_dir_path_is_safe() {
+  local dir="$1" part="" component index=0 last_index
+  local IFS='/'
+  local -a components=()
+  read -r -a components <<< "$dir"
+  last_index=$(( ${#components[@]} - 1 ))
+  for component in "${components[@]}"; do
+    part="${part:+$part/}$component"
+    [ -L "$part" ] && return 1
+    if [ "$index" -lt "$last_index" ] && [ -e "$part" ] && [ ! -d "$part" ]; then
+      return 1
+    fi
+    index=$((index + 1))
+  done
+  [ ! -e "$dir" ] || [ -d "$dir" ]
+}
+
+valid_scripts_dir "$SCRIPTS_DIR" && scripts_dir_path_is_safe "$SCRIPTS_DIR" || {
+  echo "cairn $CMD: --scripts-dir must be a safe repository-relative directory: $SCRIPTS_DIR" >&2
+  exit 2
+}
+
+sed_replacement() { printf '%s' "$1" | sed 's/[\\&|]/\\&/g'; }
+
 # Templates are written LF-only (see .gitattributes). Strip any \r anyway, so a
 # zip download or a clone made before those rules still produces working scripts
 # instead of files bash rejects with "invalid option name".
 render() { # render <template> -> stdout
+  local scripts_dir project_name branch date
+  scripts_dir="$(sed_replacement "$SCRIPTS_DIR")"
+  project_name="$(sed_replacement "$PROJECT_NAME")"
+  branch="$(sed_replacement "$BRANCH")"
+  date="$(sed_replacement "$DATE")"
   sed -e 's/\r$//' \
-      -e "s|__SCRIPTS_DIR__|$SCRIPTS_DIR|g" \
-      -e "s|__PROJECT_NAME__|$PROJECT_NAME|g" \
-      -e "s|__BRANCH__|$BRANCH|g" \
-      -e "s|__DATE__|$DATE|g" "$1"
+      -e "s|__SCRIPTS_DIR__|$scripts_dir|g" \
+      -e "s|__PROJECT_NAME__|$project_name|g" \
+      -e "s|__BRANCH__|$branch|g" \
+      -e "s|__DATE__|$date|g" "$1"
 }
 
 # --- delegating subcommands --------------------------------------------------
 # status/hooks run the repo's own installed copy when present, so behaviour
 # matches what CI and other clones execute. Fall back to the template.
-run_installed() { # run_installed <basename>
-  local name="$1" tmp
-  if [ -f "$SCRIPTS_DIR/$name" ]; then bash "$SCRIPTS_DIR/$name"; return; fi
+run_installed() { # run_installed <basename> [args...]
+  local name="$1" tmp rc
+  shift
+  if [ -f "$SCRIPTS_DIR/$name" ]; then bash "$SCRIPTS_DIR/$name" "$@"; return; fi
   tmp="$(mktemp)"; render "$TEMPLATES/scripts/$name" > "$tmp"
-  bash "$tmp"; local rc=$?; rm -f "$tmp"; return $rc
+  bash "$tmp" "$@"; rc=$?; rm -f "$tmp"; return $rc
+}
+
+run_template() { # run_template <basename> [args...] — never trust repo content
+  local name="$1" tmp rc
+  shift
+  tmp="$(mktemp)"; render "$TEMPLATES/scripts/$name" > "$tmp"
+  bash "$tmp" "$@"; rc=$?; rm -f "$tmp"; return $rc
 }
 case "$CMD" in
   status) run_installed cairn-status.sh; exit $? ;;
   hooks)  run_installed cairn-hooks.sh;  exit $? ;;
+  # This command promises a read-only host snapshot. Never execute a
+  # repository-provided replacement when fulfilling that promise.
+  resources) run_template cairn-resources.sh; exit $? ;;
 esac
 
 # --- ignore list -------------------------------------------------------------
@@ -103,6 +183,17 @@ is_ignored() {
 }
 
 CREATED=(); UPDATED=(); SKIPPED=(); DRIFT=(); MOVED=(); LEDGER_TOUCHED=0
+
+# These blocks are the only regions cAIrn edits inside user-owned files.
+BEGIN_MARK="<!-- CAIRN-LEDGER:BEGIN"
+END_MARK="<!-- CAIRN-LEDGER:END -->"
+LEGACY_BEGIN="<!-- AI-SYNC-LEDGER:BEGIN"
+LEGACY_END="<!-- AI-SYNC-LEDGER:END -->"
+ATTR_BEGIN="# CAIRN-GITATTRIBUTES:BEGIN"
+ATTR_END="# CAIRN-GITATTRIBUTES:END"
+AGENTS_BLOCK_INVALID=0
+AGENTS_PATH_INVALID=0
+LEDGER_PATH_INVALID=0
 
 # --- optional agent entry files ---------------------------------------------
 # AGENTS.md is the portable contract. Some agent runtimes only load a
@@ -123,15 +214,15 @@ valid_entry_file() { # valid_entry_file <repo-relative path>
   case "/$entry/" in
     */./*|*/../*) return 1 ;;
   esac
-  # Never let a configurable pointer replace cAIrn's core, a built-in adapter,
-  # Git metadata, hooks, or an installed cAIrn script. Fold these names so an
-  # entry remains safe on case-insensitive APFS and Windows filesystems too.
+  # Never let a configurable pointer replace cAIrn's core, Git metadata, hooks,
+  # or an installed cAIrn script. The bundled root adapters are intentionally
+  # allowed here: explicit --adopt-entry-file is the safe route for a project
+  # that already owns one of those instruction files.
   folded="$(fold_entry_path "$entry")"
   scripts_folded="$(fold_entry_path "$SCRIPTS_DIR")"
   case "$folded" in
     .git|.git/*|.cairn|.cairn/*|.githooks|.githooks/*|.github/workflows/cairn.yml|\
     agents.md|ai_handoff.md|ai_workspace.md|.cairnignore|\
-    claude.md|gemini.md|chatgpt.md|\
     "$scripts_folded"|"$scripts_folded"/*) return 1 ;;
   esac
   return 0
@@ -184,6 +275,13 @@ add_entry_file() { # add_entry_file <path> — preserve registry order, de-dupe
       ENTRY_FILE_COLLISIONS+=("$known <-> $entry")
       return
     fi
+    # One entry cannot be both a file and the parent directory of another.
+    # Detect this before any registry/core file is written, including on
+    # case-insensitive APFS and Windows filesystems.
+    if [[ "$entry_folded" == "$known_folded/"* || "$known_folded" == "$entry_folded/"* ]]; then
+      ENTRY_FILE_COLLISIONS+=("$known <-> $entry (file/directory collision)")
+      return
+    fi
   done
   ENTRY_FILES+=("$entry")
 }
@@ -206,9 +304,9 @@ entry_file_is_adopted() {
   return 1
 }
 
-entry_file_has_cairn_block() { # exactly one complete block on dedicated lines
-  local entry="$1"
-  awk -v b="$ENTRY_BEGIN" -v e="$ENTRY_END" '
+html_marked_block_is_valid() { # file begin-prefix exact-end; exactly one block
+  local file="$1" begin="$2" end="$3"
+  awk -v b="$begin" -v e="$end" '
     {
       line=$0
       sub(/\r$/, "", line)
@@ -227,12 +325,44 @@ entry_file_has_cairn_block() { # exactly one complete block on dedicated lines
       if (!inside || ends > 1) invalid=1
       inside=0
     }
-    END { exit !(begins == 1 && ends == 1 && !inside && !invalid) }' "$entry"
+    END { exit !(begins == 1 && ends == 1 && !inside && !invalid) }' "$file"
+}
+
+entry_file_has_cairn_block() { # exactly one complete block on dedicated lines
+  html_marked_block_is_valid "$1" "$ENTRY_BEGIN" "$ENTRY_END"
 }
 
 entry_file_has_cairn_marker() {
   local entry="$1"
   grep -qF "$ENTRY_BEGIN" "$entry" || grep -qF "$ENTRY_END" "$entry"
+}
+
+agents_ledger_has_marker() {
+  grep -qF "$BEGIN_MARK" AGENTS.md || grep -qF "$END_MARK" AGENTS.md \
+    || grep -qF "$LEGACY_BEGIN" AGENTS.md || grep -qF "$LEGACY_END" AGENTS.md
+}
+
+agents_ledger_block_is_valid() {
+  local current=0 legacy=0
+  { grep -qF "$BEGIN_MARK" AGENTS.md || grep -qF "$END_MARK" AGENTS.md; } && current=1
+  { grep -qF "$LEGACY_BEGIN" AGENTS.md || grep -qF "$LEGACY_END" AGENTS.md; } && legacy=1
+  [ "$current" = "1" ] && [ "$legacy" = "1" ] && return 1
+  [ "$current" = "1" ] && html_marked_block_is_valid AGENTS.md "$BEGIN_MARK" "$END_MARK" && return
+  [ "$legacy" = "1" ] && html_marked_block_is_valid AGENTS.md "$LEGACY_BEGIN" "$LEGACY_END" && return
+  return 1
+}
+
+preflight_agents_ledger() {
+  [ "$AGENTS_PATH_INVALID" = "0" ] || return 0
+  [ -f AGENTS.md ] || return 0
+  agents_ledger_has_marker || return 0
+  agents_ledger_block_is_valid && return 0
+  AGENTS_BLOCK_INVALID=1
+  if [ "$CHECK" = "1" ]; then
+    DRIFT+=("AGENTS.md (must contain exactly one complete cAIrn ledger block)")
+    return 0
+  fi
+  entry_file_error "AGENTS.md has an invalid cAIrn ledger block; refusing to overwrite it"
 }
 
 entry_file_mode() { # portable numeric mode, including set-id/sticky bits
@@ -438,6 +568,67 @@ register_requested_entry_files() {
   done
 }
 
+managed_path_is_safe() { # missing or regular, never a symlink or symlinked parent
+  local path="$1"
+  entry_file_path_is_safe "$path" && ! [ -L "$path" ] \
+    && { [ ! -e "$path" ] || [ -f "$path" ]; }
+}
+
+report_unsafe_managed_path() {
+  local path="$1"
+  if [ "$CHECK" = "1" ]; then
+    DRIFT+=("$path (must be a regular file below real directories)")
+    return 0
+  fi
+  entry_file_error "$path must be a regular file below real directories; refusing to follow or replace it"
+}
+
+preflight_core_content_paths() {
+  if ! managed_path_is_safe AGENTS.md; then
+    AGENTS_PATH_INVALID=1
+    report_unsafe_managed_path AGENTS.md
+  fi
+  if ! managed_path_is_safe AI_HANDOFF.md; then
+    LEDGER_PATH_INVALID=1
+    report_unsafe_managed_path AI_HANDOFF.md
+  fi
+}
+
+preflight_legacy_paths() {
+  local from to pair
+  for pair in \
+    "$SCRIPTS_DIR/ai-sync-install.sh:$SCRIPTS_DIR/cairn-hooks.sh" \
+    "$SCRIPTS_DIR/ai-sync-status.sh:$SCRIPTS_DIR/cairn-status.sh" \
+    "$SCRIPTS_DIR/ai-sync-ci-check.sh:$SCRIPTS_DIR/cairn-check.sh" \
+    ".github/workflows/ai-sync.yml:.github/workflows/cairn.yml" \
+    ".ai-sync-ignore:.cairnignore"
+  do
+    from="${pair%%:*}"; to="${pair##*:}"
+    [ ! -e "$from" ] && ! [ -L "$from" ] && continue
+    managed_path_is_safe "$from" || report_unsafe_managed_path "$from"
+    managed_path_is_safe "$to" || report_unsafe_managed_path "$to"
+  done
+}
+
+preflight_sync_paths() {
+  local path
+  # Validate every destination that sync_file or sync_gitattributes might write
+  # before the first registry, migration, or template write. A late refusal is
+  # not safe if an earlier file has already been installed.
+  for path in \
+    .gitattributes \
+    "$SCRIPTS_DIR/cairn-hooks.sh" \
+    "$SCRIPTS_DIR/cairn-status.sh" \
+    "$SCRIPTS_DIR/cairn-check.sh" \
+    "$SCRIPTS_DIR/cairn-resources.sh" \
+    .github/workflows/cairn.yml \
+    AI_WORKSPACE.md
+  do
+    is_ignored "$path" && continue
+    managed_path_is_safe "$path" || report_unsafe_managed_path "$path"
+  done
+}
+
 # --- migration from the pre-rename layout ------------------------------------
 # Repos installed before the rename carry ai-sync-* names. Move them rather than
 # leaving two parallel installs, and use git mv so history follows the file.
@@ -496,6 +687,13 @@ migrate_legacy() {
     LEDGER_TOUCHED=1
   fi
 }
+# Refuse unsafe core/legacy paths and malformed AGENTS markers before migrations,
+# registries, or managed files can be touched. No migration may follow a repo
+# symlink or turn a malformed marker into truncation.
+preflight_core_content_paths
+preflight_legacy_paths
+preflight_sync_paths
+preflight_agents_ledger
 prepare_entry_files
 migrate_legacy
 [ "$CHECK" = "1" ] || register_requested_entry_files
@@ -504,6 +702,11 @@ migrate_legacy
 sync_file() { # sync_file <template> <dest> [executable]
   local tpl="$1" dest="$2" exec_bit="${3:-}" tmp
   if is_ignored "$dest"; then SKIPPED+=("$dest (local override)"); return; fi
+  if ! entry_file_path_is_safe "$dest" || [ -L "$dest" ] \
+     || { [ -e "$dest" ] && [ ! -f "$dest" ]; }; then
+    if [ "$CHECK" = "1" ]; then DRIFT+=("$dest (must be a regular file below real directories)"); return; fi
+    entry_file_error "$dest must be a regular file below real directories; refusing to follow or replace it"
+  fi
   tmp="$(mktemp)"; render "$tpl" > "$tmp"
   if [ ! -f "$dest" ]; then
     if [ "$CHECK" = "1" ]; then DRIFT+=("$dest (missing)"); rm -f "$tmp"; return; fi
@@ -513,6 +716,152 @@ sync_file() { # sync_file <template> <dest> [executable]
   if cmp -s "$tmp" "$dest"; then rm -f "$tmp"; return; fi
   if [ "$CHECK" = "1" ]; then DRIFT+=("$dest (differs)"); rm -f "$tmp"; return; fi
   mv "$tmp" "$dest"; [ -n "$exec_bit" ] && chmod +x "$dest"; UPDATED+=("$dest")
+}
+
+cairn_hook_is_owned() {
+  [ -f .githooks/pre-commit ] && ! [ -L .githooks/pre-commit ] \
+    && awk '
+      { line=$0; sub(/\r$/, "", line) }
+      line == "# CAIRN-HOOK:BEGIN" {
+        begins++
+        if (NR != 5 || begins > 1) invalid=1
+      }
+      line == "# CAIRN-HOOK:END" {
+        ends++
+        if (ends > 1) invalid=1
+        end_line=NR
+      }
+      END { exit !(begins == 1 && ends == 1 && end_line == NR && !invalid) }' .githooks/pre-commit
+}
+
+legacy_cairn_hook_is_owned() {
+  [ -f .githooks/pre-commit ] && ! [ -L .githooks/pre-commit ] \
+    && cmp -s <(render "$TEMPLATES/githooks/pre-commit.legacy") .githooks/pre-commit
+}
+
+sync_cairn_hook() { # never replace a project's existing pre-commit hook by surprise
+  local dest=".githooks/pre-commit"
+  if is_ignored "$dest"; then SKIPPED+=("$dest (local override)"); return; fi
+  if [ -L .githooks ] || { [ -e .githooks ] && [ ! -d .githooks ]; }; then
+    [ "$CHECK" = "1" ] || SKIPPED+=(".githooks (existing path preserved; not followed)")
+    return
+  fi
+  if [ ! -e "$dest" ] && ! [ -L "$dest" ]; then
+    sync_file "$TEMPLATES/githooks/pre-commit" "$dest" x
+    return
+  fi
+  if cairn_hook_is_owned || legacy_cairn_hook_is_owned \
+     || { [ "$FORCE" = "1" ] && [ "$CHECK" != "1" ] && [ -f "$dest" ] && ! [ -L "$dest" ]; }; then
+    sync_file "$TEMPLATES/githooks/pre-commit" "$dest" x
+    return
+  fi
+  [ "$CHECK" = "1" ] || SKIPPED+=("$dest (existing hook preserved; use --force to replace)")
+}
+
+sync_runtime_shim() { # create a bundled pointer without clobbering native rules
+  local tpl="$1" dest="$2" tmp
+  if is_ignored "$dest"; then SKIPPED+=("$dest (local override)"); return; fi
+  # An explicitly registered root instruction file is managed by the generic
+  # entry-file path below, not by a provider-specific convenience shim.
+  if entry_file_is_registered "$dest"; then
+    SKIPPED+=("$dest (managed as a registered entry file)")
+    return
+  fi
+  tmp="$(mktemp)"; render "$tpl" > "$tmp"
+  if [ ! -e "$dest" ] && ! [ -L "$dest" ]; then
+    if [ "$CHECK" = "1" ]; then DRIFT+=("$dest (missing)"); rm -f "$tmp"; return; fi
+    mv "$tmp" "$dest"; CREATED+=("$dest"); return
+  fi
+  if [ -f "$dest" ] && ! [ -L "$dest" ] && cmp -s "$tmp" "$dest"; then
+    rm -f "$tmp"; return
+  fi
+  if [ "$FORCE" = "1" ] && [ "$CHECK" != "1" ] && [ -f "$dest" ] && ! [ -L "$dest" ]; then
+    mv "$tmp" "$dest"; UPDATED+=("$dest (forced pointer replacement)"); return
+  fi
+  rm -f "$tmp"
+  # A native instruction file can contain local rules that cAIrn cannot infer.
+  # Preserve it by default; --adopt-entry-file is available for an explicit
+  # cAIrn routing block, including these bundled root-file names.
+  [ "$CHECK" = "1" ] || SKIPPED+=("$dest (existing instruction file preserved; use --force to replace or --adopt-entry-file to append a cAIrn block)")
+}
+
+gitattributes_has_cairn_marker() {
+  grep -qF "$ATTR_BEGIN" .gitattributes || grep -qF "$ATTR_END" .gitattributes
+}
+
+gitattributes_has_cairn_block() {
+  awk -v b="$ATTR_BEGIN" -v e="$ATTR_END" '
+    {
+      line=$0
+      sub(/\r$/, "", line)
+    }
+    index(line, b) {
+      if (line != b) invalid=1
+      begins++
+      if (inside || begins > 1) invalid=1
+      inside=1
+    }
+    index(line, e) {
+      if (line != e) invalid=1
+      ends++
+      if (!inside || ends > 1) invalid=1
+      inside=0
+    }
+    END { exit !(begins == 1 && ends == 1 && !inside && !invalid) }' .gitattributes
+}
+
+sync_gitattributes() { # merge only cAIrn's marked LF-protection block
+  local dest=".gitattributes" block current out
+  if is_ignored "$dest"; then SKIPPED+=("$dest (local override)"); return; fi
+  block="$(mktemp)"; render "$TEMPLATES/GITATTRIBUTES.cairn-block" > "$block"
+  if [ ! -e "$dest" ] && ! [ -L "$dest" ]; then
+    if [ "$CHECK" = "1" ]; then DRIFT+=("$dest (missing cAIrn LF block)"); rm -f "$block"; return; fi
+    mv "$block" "$dest"; CREATED+=("$dest"); return
+  fi
+  if [ -L "$dest" ] || [ ! -f "$dest" ]; then
+    rm -f "$block"
+    if [ "$CHECK" = "1" ]; then DRIFT+=("$dest (must be a regular file)"); return; fi
+    entry_file_error "$dest must be a regular file; refusing to follow or replace it"
+  fi
+  if ! gitattributes_has_cairn_marker; then
+    if [ "$CHECK" = "1" ]; then DRIFT+=("$dest (missing cAIrn LF block)"); rm -f "$block"; return; fi
+    out="$(mktemp)"
+    cat "$dest" > "$out"
+    [ ! -s "$dest" ] || printf '\n' >> "$out"
+    cat "$block" >> "$out"
+    replace_entry_file_contents "$dest" "$out"
+    rm -f "$block" "$out"; UPDATED+=("$dest (cAIrn LF block appended)"); return
+  fi
+  if ! gitattributes_has_cairn_block; then
+    rm -f "$block"
+    if [ "$CHECK" = "1" ]; then DRIFT+=("$dest (invalid cAIrn LF block)"); return; fi
+    entry_file_error "$dest has an invalid cAIrn LF block; refusing to overwrite it"
+  fi
+  current="$(mktemp)"
+  awk -v b="$ATTR_BEGIN" -v e="$ATTR_END" '
+    {
+      line=$0
+      sub(/\r$/, "", line)
+    }
+    line == b { inside=1 }
+    inside { print line }
+    line == e { exit }' "$dest" > "$current"
+  if cmp -s "$block" "$current"; then rm -f "$block" "$current"; return; fi
+  if [ "$CHECK" = "1" ]; then
+    DRIFT+=("$dest (cAIrn LF block differs)")
+    rm -f "$block" "$current"; return
+  fi
+  out="$(mktemp)"
+  awk -v b="$ATTR_BEGIN" -v e="$ATTR_END" -v repl="$block" '
+    {
+      line=$0
+      sub(/\r$/, "", line)
+    }
+    line == b { while ((getline replacement < repl) > 0) print replacement; close(repl); inside=1; next }
+    inside && line == e { inside=0; next }
+    !inside { print }' "$dest" > "$out"
+  replace_entry_file_contents "$dest" "$out"
+  rm -f "$block" "$current" "$out"; UPDATED+=("$dest (cAIrn LF block)")
 }
 
 sync_entry_file() { # sync_entry_file <registered repo-relative path>
@@ -569,33 +918,55 @@ sync_entry_file() { # sync_entry_file <registered repo-relative path>
 
 seed_file() { # seed_file <template> <dest> — content files: seed once
   local tpl="$1" dest="$2"
-  if [ -f "$dest" ] && [ "$FORCE" != "1" ]; then SKIPPED+=("$dest (exists)"); return; fi
+  if ! entry_file_path_is_safe "$dest" || [ -L "$dest" ] \
+     || { [ -e "$dest" ] && [ ! -f "$dest" ]; }; then
+    if [ "$CHECK" = "1" ]; then DRIFT+=("$dest (must be a regular file below real directories)"); return; fi
+    entry_file_error "$dest must be a regular file below real directories; refusing to follow or replace it"
+  fi
+  # `AI_HANDOFF.md` is append-only history. No generic force flag may erase it.
+  if [ -f "$dest" ]; then SKIPPED+=("$dest (exists; content preserved)"); return; fi
   if [ "$CHECK" = "1" ]; then [ -f "$dest" ] || DRIFT+=("$dest (missing)"); return; fi
   render "$tpl" > "$dest"; CREATED+=("$dest")
 }
 
-sync_file "$TEMPLATES/githooks/pre-commit"        ".githooks/pre-commit"          x
+ledger_has_required_sections() {
+  awk '
+    /^## Active Work[[:space:]]*$/ { active++ }
+    /^## Log/ { log_section++ }
+    END { exit !(active >= 1 && log_section >= 1) }' AI_HANDOFF.md
+}
+
+sync_gitattributes
+sync_cairn_hook
 sync_file "$TEMPLATES/scripts/cairn-hooks.sh"     "$SCRIPTS_DIR/cairn-hooks.sh"   x
 sync_file "$TEMPLATES/scripts/cairn-status.sh"    "$SCRIPTS_DIR/cairn-status.sh"  x
 sync_file "$TEMPLATES/scripts/cairn-check.sh"     "$SCRIPTS_DIR/cairn-check.sh"   x
+sync_file "$TEMPLATES/scripts/cairn-resources.sh" "$SCRIPTS_DIR/cairn-resources.sh" x
 sync_file "$TEMPLATES/workflows/cairn.yml"        ".github/workflows/cairn.yml"
 sync_file "$TEMPLATES/AI_WORKSPACE.md"            "AI_WORKSPACE.md"
-sync_file "$TEMPLATES/CLAUDE.md"                  "CLAUDE.md"
-sync_file "$TEMPLATES/GEMINI.md"                  "GEMINI.md"
-sync_file "$TEMPLATES/CHATGPT.md"                 "CHATGPT.md"
+sync_runtime_shim "$TEMPLATES/CLAUDE.md"          "CLAUDE.md"
+sync_runtime_shim "$TEMPLATES/GEMINI.md"          "GEMINI.md"
+sync_runtime_shim "$TEMPLATES/CHATGPT.md"         "CHATGPT.md"
 for entry_file in "${ENTRY_FILES[@]:-}"; do
   [ -z "$entry_file" ] || sync_entry_file "$entry_file"
 done
 [ "$LEDGER_TOUCHED" = "1" ] || seed_file "$TEMPLATES/AI_HANDOFF.md" "AI_HANDOFF.md"
+if [ "$CHECK" = "1" ] && [ -f AI_HANDOFF.md ] && ! [ -L AI_HANDOFF.md ] \
+   && ! ledger_has_required_sections; then
+  DRIFT+=("AI_HANDOFF.md (missing required Active Work or Log section)")
+fi
 
-# AGENTS.md: full skeleton when absent; otherwise only the marked block is
-# replaced, so hand-written architecture and command sections survive a re-sync.
-BEGIN_MARK="<!-- CAIRN-LEDGER:BEGIN"
-END_MARK="<!-- CAIRN-LEDGER:END -->"
-LEGACY_BEGIN="<!-- AI-SYNC-LEDGER:BEGIN"
-LEGACY_END="<!-- AI-SYNC-LEDGER:END -->"
+# AGENTS.md: full skeleton when absent; otherwise only the preflight-validated
+# marked block is replaced, so hand-written architecture and command sections
+# survive a re-sync.
 if is_ignored "AGENTS.md"; then
   SKIPPED+=("AGENTS.md (local override)")
+elif [ "$AGENTS_BLOCK_INVALID" = "1" ]; then
+  : # already reported as drift in check mode; init exited during preflight.
+elif ! entry_file_path_is_safe AGENTS.md || [ -L AGENTS.md ] \
+     || { [ -e AGENTS.md ] && [ ! -f AGENTS.md ]; }; then
+  if [ "$CHECK" = "1" ]; then DRIFT+=("AGENTS.md (must be a regular file below real directories)");
+  else entry_file_error "AGENTS.md must be a regular file below real directories; refusing to follow or replace it"; fi
 elif [ ! -f AGENTS.md ]; then
   seed_file "$TEMPLATES/AGENTS.skeleton.md" "AGENTS.md"
 else
@@ -620,6 +991,8 @@ else
       mv "$out" AGENTS.md; UPDATED+=("AGENTS.md (ledger block)")
     fi
     rm -f "$current"
+  elif grep -qF "$LEGACY_BEGIN" AGENTS.md; then
+    : # check mode already reported legacy markers; init migrated them above.
   elif [ "$CHECK" = "1" ]; then DRIFT+=("AGENTS.md (no ledger block)")
   else
     printf '\n' >> AGENTS.md; cat "$block" >> AGENTS.md

@@ -2,12 +2,32 @@
 # cAIrn pre-commit — enforce that code changes also update the project ledger.
 # Managed by __SCRIPTS_DIR__/cairn-hooks.sh (sets core.hooksPath=.githooks).
 # Bypass intentionally for docs-only commits:  git commit --no-verify
+# CAIRN-HOOK:BEGIN
 set -euo pipefail
 
 LEDGER="AI_HANDOFF.md"
 
-staged="$(git diff --cached --name-only --diff-filter=ACMR)"
+staged="$(git diff --cached --name-only --diff-filter=ACMRDT)"
 [ -z "$staged" ] && exit 0
+
+# A path name in a diff is not proof that the ledger survives the commit. Check
+# the staged tree directly so a rename, deletion, or type change cannot turn a
+# ledger update into an apparent pass.
+ledger_mode="$(git ls-files -s -- "$LEDGER" | awk 'NR == 1 { print $1; exit }')"
+case "$ledger_mode" in
+  100644|100755) ;;
+  *)
+  cat >&2 <<'MSG'
+
+  x  cAIrn: AI_HANDOFF.md must remain a regular tracked file.
+
+     Restore the shared ledger before committing. It is append-only project
+     history, not a disposable status note.
+
+MSG
+  exit 1
+  ;;
+esac
 
 ledger_staged=0
 code_staged=0
@@ -19,6 +39,23 @@ while IFS= read -r f; do
     *)                            code_staged=1 ;;
   esac
 done <<< "$staged"
+
+if [ "$code_staged" -eq 1 ] || [ "$ledger_staged" -eq 1 ]; then
+  if ! git show ":$LEDGER" | awk '
+    /^## Active Work[[:space:]]*$/ { active++ }
+    /^## Log/ { log_section++ }
+    END { exit !(active >= 1 && log_section >= 1) }'; then
+    cat >&2 <<'MSG'
+
+  x  cAIrn: AI_HANDOFF.md is missing its required Active Work or Log section.
+
+     Restore the append-only ledger structure before committing code. A file
+     path alone is not a valid handoff.
+
+MSG
+    exit 1
+  fi
+fi
 
 if [ "$code_staged" -eq 1 ] && [ "$ledger_staged" -eq 0 ]; then
   cat >&2 <<'MSG'
@@ -37,3 +74,4 @@ MSG
 fi
 
 exit 0
+# CAIRN-HOOK:END

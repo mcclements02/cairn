@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# cAIrn pre-commit — enforce that code changes also update the project ledger.
+# Managed by __SCRIPTS_DIR__/cairn-hooks.sh (sets core.hooksPath=.githooks).
+# Bypass intentionally for docs-only commits:  git commit --no-verify
+set -euo pipefail
+
+LEDGER="AI_HANDOFF.md"
+
+staged="$(git diff --cached --name-only --diff-filter=ACMR)"
+[ -z "$staged" ] && exit 0
+
+ledger_staged=0
+code_staged=0
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  case "$f" in
+    "$LEDGER")                    ledger_staged=1 ;;
+    *.md|*.markdown|*.txt|*.rst)  : ;;            # docs are exempt
+    *)                            code_staged=1 ;;
+  esac
+done <<< "$staged"
+
+if [ "$code_staged" -eq 1 ] && [ "$ledger_staged" -eq 0 ]; then
+  cat >&2 <<'MSG'
+
+  x  cAIrn: code is staged but AI_HANDOFF.md is not.
+
+     All code must update the shared project ledger so every worktree,
+     branch, agent/runtime/model, and human collaborator stays in sync
+     and nothing is stranded.
+
+     Fix:   add a Log entry to AI_HANDOFF.md, then  git add AI_HANDOFF.md
+     Bypass (docs-only / intentional):              git commit --no-verify
+
+MSG
+  exit 1
+fi
+
+exit 0

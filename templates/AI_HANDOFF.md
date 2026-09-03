@@ -36,6 +36,6 @@ conflict here means two agents diverged — keep **both** entries.
 - **Validation:** scaffolding only — no code paths touched.
 - **Status:** done.
 - **Next:** run `bash __SCRIPTS_DIR__/cairn-hooks.sh` once per clone to enable
-  the pre-commit reminder, and make "cAIrn ledger check" a required status
-  check in branch protection.
+  the pre-commit reminder if init reported it could not safely do so, and make
+  "cAIrn ledger check" a required status check in branch protection.
 <!-- entry:cairn-init -->

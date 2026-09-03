@@ -1,7 +1,7 @@
 # AI Workspace Protocol
 
 <!-- Version control: bump Version and Last updated on every edit to this file. -->
-**Version:** 2 · **Last updated:** 2026-09-02 · **Updated by:** cairn
+**Version:** 2 · **Last updated:** __DATE__ · **Updated by:** cairn
 
 This file is a pointer, not a source of rules. It exists so any agent or human
 looking for a "workspace protocol" lands on the real, in-repo sources instead of

@@ -4,9 +4,15 @@
 # for every clone, on every platform.
 cairn                 text eol=lf
 *.sh                  text eol=lf
-.cairn/entry-files    text eol=lf
 .githooks/*           text eol=lf
 templates/githooks/*  text eol=lf
+
+# CAIRN-GITATTRIBUTES:BEGIN
+# cAIrn shell assets must keep LF endings so Git Bash and POSIX shells work.
+.githooks/* text eol=lf
+.cairn/entry-files text eol=lf
+scripts/cairn-*.sh text eol=lf
+# CAIRN-GITATTRIBUTES:END
 
 # Markdown is written by humans and agents on both platforms; normalize.
 *.md                  text

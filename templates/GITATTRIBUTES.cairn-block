@@ -1,0 +1,6 @@
+# CAIRN-GITATTRIBUTES:BEGIN
+# cAIrn shell assets must keep LF endings so Git Bash and POSIX shells work.
+.githooks/* text eol=lf
+.cairn/entry-files text eol=lf
+__SCRIPTS_DIR__/cairn-*.sh text eol=lf
+# CAIRN-GITATTRIBUTES:END
