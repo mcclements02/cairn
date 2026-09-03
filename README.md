@@ -20,6 +20,33 @@ cAIrn fixes that with a single rule, enforced mechanically:
 State lives in the repo, on the branch, in the diff — so it merges, survives
 handoffs, and is readable by whichever agent shows up next.
 
+## The workflow at a glance
+
+Every participant follows the same loop; cAIrn does not need to identify their
+model, runtime, or role.
+
+```mermaid
+flowchart TD
+    A["Initialize or re-sync a repository: cairn init"] --> B["Shared contract: AGENTS.md rules + AI_HANDOFF.md state"]
+    B --> C["Any agent, runtime, or human reads the rules and live handoff"]
+    C --> D["Works in an owned branch or worktree"]
+    D --> E{"Code change?"}
+    E -->|yes| F["Refresh AI_HANDOFF.md: active work + append-only log"]
+    E -->|docs only| I["Commit, push, and open a PR"]
+    F --> G["Stage code and the ledger together"]
+    G --> H{"Local pre-commit (if enabled): ledger staged and structurally valid?"}
+    H -->|fix needed| F
+    H -->|passes| I
+    I --> J{"PR CI: code changes include a structurally valid ledger?"}
+    J -->|fix needed| F
+    J -->|passes| K["Shared branch history becomes the next handoff"]
+    K --> C
+```
+
+`cairn init` attempts to enable the local hook for its clone without replacing
+an existing hook setup. CI provides the shared boundary when the local hook is
+absent or bypassed.
+
 ## Install 
 
 ```sh
