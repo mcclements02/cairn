@@ -8,6 +8,9 @@
 #   cairn status [--scripts-dir DIR] [PATH]             cross-worktree stranded work
 #   cairn hooks  [--scripts-dir DIR] [PATH]             enable hooks in this clone
 #   cairn resources [PATH]                              host-local RAM/process snapshot (read-only)
+#   cairn compact [--keep N] [--archive PATH] [--dry-run] [PATH]   compact ledger and archive older entries
+#   cairn skill  init <name> | list [PATH]              scaffold or list reusable agent skills
+#   cairn --version                                  print the installed version
 #   cairn help
 set -euo pipefail
 
@@ -25,11 +28,13 @@ done
 SELF="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 TEMPLATES="$SELF/templates"
 
-usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; }
 
 CMD="${1:-help}"; [ $# -gt 0 ] && shift
 case "$CMD" in
-  init|check|status|hooks|resources) ;;
+  init|check|status|hooks|resources|compact|skill) ;;
+  version|-V|--version)
+    printf 'cairn %s\n' "$(cat "$SELF/VERSION")"; exit 0 ;;
   help|-h|--help)          usage; exit 0 ;;
   *) echo "cairn: unknown command '$CMD'" >&2; echo >&2; usage >&2; exit 2 ;;
 esac
@@ -37,6 +42,8 @@ esac
 CHECK=0; [ "$CMD" = "check" ] && CHECK=1
 FORCE=0; SCRIPTS_DIR=""; TARGET=""
 ENTRY_FILE_ARGS=(); ADOPT_ENTRY_FILE_ARGS=()
+KEEP=10; ARCHIVE_FILE="AI_HANDOFF_ARCHIVE.md"; COMPACT_DRY_RUN=0
+SKILL_ACTION=""; SKILL_NAME=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --force)
@@ -53,13 +60,60 @@ while [ $# -gt 0 ]; do
       [ "$CMD" = "init" ] || { echo "cairn $CMD: --adopt-entry-file is only valid with init" >&2; exit 2; }
       [ -n "${2:-}" ] || { echo "cairn init: --adopt-entry-file needs a value" >&2; exit 2; }
       ADOPT_ENTRY_FILE_ARGS+=("$2"); shift 2 ;;
+    --dry-run)
+      [ "$CMD" = "compact" ] || { echo "cairn $CMD: --dry-run is only valid with compact" >&2; exit 2; }
+      COMPACT_DRY_RUN=1; shift ;;
+    --keep)
+      [ "$CMD" = "compact" ] || { echo "cairn $CMD: --keep is only valid with compact" >&2; exit 2; }
+      [ -n "${2:-}" ] || { echo "cairn compact: --keep needs a value" >&2; exit 2; }
+      KEEP="$2"; shift 2 ;;
+    --archive)
+      [ "$CMD" = "compact" ] || { echo "cairn $CMD: --archive is only valid with compact" >&2; exit 2; }
+      [ -n "${2:-}" ] || { echo "cairn compact: --archive needs a value" >&2; exit 2; }
+      ARCHIVE_FILE="$2"; shift 2 ;;
     -h|--help)     usage; exit 0 ;;
     -*)            echo "cairn $CMD: unknown flag: $1" >&2; exit 2 ;;
     *)
-      [ -z "$TARGET" ] || { echo "cairn $CMD: only one repository path may be supplied" >&2; exit 2; }
-      TARGET="$1"; shift ;;
+      if [ "$CMD" = "skill" ] && [ -z "$SKILL_ACTION" ]; then
+        SKILL_ACTION="$1"; shift
+        if [ "$SKILL_ACTION" = "init" ] || [ "$SKILL_ACTION" = "create" ]; then
+          [ $# -gt 0 ] && [ "${1#-}" = "$1" ] || { echo "cairn skill $SKILL_ACTION: skill name required" >&2; exit 2; }
+          SKILL_NAME="$1"; shift
+        fi
+      else
+        [ -z "$TARGET" ] || { echo "cairn $CMD: only one repository path may be supplied" >&2; exit 2; }
+        TARGET="$1"; shift
+      fi ;;
   esac
 done
+
+if [ "$CMD" = "skill" ]; then
+  case "$SKILL_ACTION" in
+    init|create)
+      [ -n "$SKILL_NAME" ] || { echo "cairn skill $SKILL_ACTION: needs a skill name" >&2; exit 2; }
+      ;;
+    list) ;;
+    "") echo "cairn skill: action required (init <name> | list)" >&2; exit 2 ;;
+    *) echo "cairn skill: unknown action '$SKILL_ACTION' (expected init <name> | list)" >&2; exit 2 ;;
+  esac
+fi
+
+if [ "$CMD" = "compact" ]; then
+  case "$KEEP" in
+    ''|*[!0-9]*) echo "cairn compact: --keep must be a positive integer" >&2; exit 2 ;;
+  esac
+  KEEP="$(printf '%s' "$KEEP" | sed 's/^0*//')"
+  if [ -z "$KEEP" ] || [ "${#KEEP}" -gt 9 ]; then
+    echo "cairn compact: --keep must be between 1 and 999999999" >&2
+    exit 2
+  fi
+  case "$ARCHIVE_FILE" in
+    ""|/*|-*|\#*|[A-Za-z]:*|*\\*|.|..|*/|*//*|*$'\n'*|*$'\r'*)
+      echo "cairn compact: --archive must be a safe repository-relative path: $ARCHIVE_FILE" >&2
+      exit 2
+      ;;
+  esac
+fi
 
 [ -d "$TEMPLATES" ] || { echo "x  templates/ not found next to $0" >&2; exit 1; }
 
@@ -164,12 +218,228 @@ run_template() { # run_template <basename> [args...] — never trust repo conten
   tmp="$(mktemp)"; render "$TEMPLATES/scripts/$name" > "$tmp"
   bash "$tmp" "$@"; rc=$?; rm -f "$tmp"; return $rc
 }
+# Shared file-target guard for commands that create repository content.
+# Check every component: lexical containment alone does not prevent symlink writes.
+repo_file_path_is_safe() {
+  local target="$1" part="" component
+  local IFS='/'
+  local -a components=()
+  case "$target" in
+    ""|/*|-*|*/|*//*|*[!A-Za-z0-9._/-]*) return 1 ;;
+  esac
+  read -r -a components <<< "$target"
+  for component in "${components[@]}"; do
+    case "$component" in .|..|.[Gg][Ii][Tt]) return 1 ;; esac
+    part="${part:+$part/}$component"
+    [ -L "$part" ] && return 1
+    if [ "$part" != "$target" ] && [ -e "$part" ] && [ ! -d "$part" ]; then
+      return 1
+    fi
+  done
+  [ ! -e "$target" ] || [ -f "$target" ]
+}
+
+run_compact() (
+  local ledger="AI_HANDOFF.md" archive_folded tmp_dir retained archived
+  repo_file_path_is_safe "$ledger" && [ -f "$ledger" ] || {
+    echo "x  cairn compact: $ledger must be a regular file below real directories" >&2
+    exit 1
+  }
+  repo_file_path_is_safe "$ARCHIVE_FILE" || {
+    echo "x  cairn compact: unsafe archive path: $ARCHIVE_FILE" >&2
+    exit 2
+  }
+  archive_folded="$(printf '%s' "$ARCHIVE_FILE" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+  case "$archive_folded" in
+    .cairn|.cairn/*|.githooks|.githooks/*|.github|.github/*|\
+    agents.md|ai_handoff.md|ai_workspace.md|claude.md|gemini.md|chatgpt.md|\
+    .cairnignore|.gitattributes)
+      echo "x  cairn compact: archive may not replace a repository instruction or configuration file" >&2
+      exit 2 ;;
+  esac
+  case "$archive_folded" in
+    *.md|*.markdown) ;;
+    *) echo "x  cairn compact: archive must be a Markdown file" >&2; exit 2 ;;
+  esac
+  if [ -e "$ARCHIVE_FILE" ] && [ "$ARCHIVE_FILE" -ef "$ledger" ]; then
+    echo "x  cairn compact: archive and ledger must be different files" >&2
+    exit 2
+  fi
+  if [ -f "$ARCHIVE_FILE" ] && ! grep -qE '^## (Log Archive|Archived Log)([[:space:]]|$)' "$ARCHIVE_FILE"; then
+    echo "x  cairn compact: existing archive has no archive section; refusing to modify unrelated content" >&2
+    exit 1
+  fi
+  if ! awk '
+    /^## Active Work[[:space:]]*$/ { active++ }
+    /^## Log([[:space:]]|$)/ { log_section++ }
+    END { exit !(active == 1 && log_section == 1) }' "$ledger"; then
+    echo "x  cairn compact: $ledger needs exactly one Active Work and Log section" >&2
+    exit 1
+  fi
+
+  tmp_dir="$(mktemp -d .cairn-compact.XXXXXX)"
+  trap 'rm -rf "$tmp_dir"' EXIT
+  cp -p "$ledger" "$tmp_dir/ledger"
+  : > "$tmp_dir/ledger"
+  : > "$tmp_dir/entries"
+  # Keep the newest N entries, every unresolved/unknown-status entry, and entries
+  # belonging to a branch with in-flight Active Work. Status is conservative:
+  # only an explicit terminal status permits an older entry to leave the ledger.
+  awk -v keep="$KEEP" -v live="$tmp_dir/ledger" -v old="$tmp_dir/entries" -v counts="$tmp_dir/counts" '
+    function trim(value) { sub(/^[[:space:]]+/, "", value); sub(/[[:space:]]+$/, "", value); return value }
+    function terminal(value) { return value ~ /^(done|resolved|completed|complete|merged|abandoned|cancelled|canceled|closed)$/ }
+    function flush(    target) {
+      if (!entry) return
+      if (number <= keep || !terminal(status) || active[branch]) { target=live; retained++ }
+      else { target=old; archived++ }
+      printf "%s", entry >> target
+      entry=""; status=""; branch=""
+    }
+    { line=$0; sub(/\r$/, "", line) }
+    !in_log && line ~ /^\|/ {
+      split(line, row, "|")
+      name=trim(row[2]); state=tolower(trim(row[5]))
+      if (name != "Branch" && name !~ /^-+$/ && name != "" && state != "idle" && !terminal(state)) active[name]=1
+    }
+    line ~ /^## Log([[:space:]]|$)/ { in_log=1 }
+    in_log && line ~ /^### / {
+      flush(); number++
+      split(line, header, /[[:space:]]*·[[:space:]]*/)
+      branch=trim(header[2]); entry=$0 "\n"; next
+    }
+    number > 0 {
+      if (line ~ /^- \*\*Status:\*\*/) {
+        status=line; sub(/^- \*\*Status:\*\*[[:space:]]*/, "", status)
+        status=tolower(trim(status)); sub(/\.$/, "", status)
+      }
+      entry=entry $0 "\n"; next
+    }
+    { print >> live }
+    END { flush(); print retained+0, archived+0 > counts }
+  ' "$ledger"
+  read -r retained archived < "$tmp_dir/counts"
+  if [ "$archived" -eq 0 ]; then
+    echo "cairn compact: $ledger has $retained retained entries — compaction not needed."
+    return 0
+  fi
+  if [ "$COMPACT_DRY_RUN" -eq 1 ]; then
+    echo "cairn compact: would archive $archived entries to $ARCHIVE_FILE ($retained entries retained in $ledger)"
+    return 0
+  fi
+  if ! grep -qF "Older entries archived in [$ARCHIVE_FILE]" "$tmp_dir/ledger"; then
+    awk -v archive="$ARCHIVE_FILE" '
+      /^## Log([[:space:]]|$)/ { print; print ""; print "> Older entries archived in [" archive "](" archive ")."; next }
+      { print }
+    ' "$tmp_dir/ledger" > "$tmp_dir/linked"
+    cat "$tmp_dir/linked" > "$tmp_dir/ledger"
+  fi
+  if [ -f "$ARCHIVE_FILE" ]; then
+    cp -p "$ARCHIVE_FILE" "$tmp_dir/archive"
+    awk -v entries_file="$tmp_dir/entries" '
+      !inserted && /^## (Log Archive|Archived Log)([[:space:]]|$)/ {
+        print; print ""
+        while ((getline line < entries_file) > 0) print line
+        close(entries_file); inserted=1; next
+      }
+      { print }
+    ' "$ARCHIVE_FILE" > "$tmp_dir/merged"
+    cat "$tmp_dir/merged" > "$tmp_dir/archive"
+  else
+    printf '# AI Handoff Ledger — Archive\n\nArchived historical log entries from %s.\n\n## Log Archive (newest on top)\n\n' "$ledger" > "$tmp_dir/archive"
+    cat "$tmp_dir/entries" >> "$tmp_dir/archive"
+  fi
+  mkdir -p "$(dirname "$ARCHIVE_FILE")"
+  # Publish the archive first. If publishing the live ledger fails, history
+  # remains in both files rather than disappearing from both.
+  mv -f "$tmp_dir/archive" "$ARCHIVE_FILE"
+  mv -f "$tmp_dir/ledger" "$ledger"
+  echo "+ cairn compact: archived $archived entries to $ARCHIVE_FILE ($retained entries retained in $ledger)"
+)
+
+run_skill() {
+  case "$SKILL_ACTION" in
+    init|create)
+      case "$SKILL_NAME" in
+        ""|.|..|*[!A-Za-z0-9._-]*)
+          echo "cairn skill init: name may only contain letters, numbers, hyphens, underscores, and dots: '$SKILL_NAME'" >&2
+          exit 2
+          ;;
+      esac
+      local skill_dir=".agents/skills/$SKILL_NAME"
+      local skill_file="$skill_dir/SKILL.md"
+      repo_file_path_is_safe "$skill_file" || {
+        echo "x  cairn skill init: unsafe skill path: $skill_file" >&2
+        exit 2
+      }
+      if [ -e "$skill_file" ]; then
+        echo "x  cairn skill init: skill '$SKILL_NAME' already exists at $skill_file" >&2
+        exit 1
+      fi
+      mkdir -p "$skill_dir"
+      cat > "$skill_file" <<EOF
+---
+name: $SKILL_NAME
+description: Reusable agent skill for $SKILL_NAME
+---
+
+# $SKILL_NAME
+
+## When to use
+<!-- When an agent should invoke or execute this skill -->
+Use this skill when ...
+
+## Prerequisites
+<!-- Dependencies, environment variables, tools, or configuration needed -->
+-
+
+## Workflow
+<!-- Actionable, repeatable step-by-step instructions -->
+1.
+2.
+
+## Validation
+<!-- Verification commands and expected outcomes -->
+-
+EOF
+      echo "+ created skill: $skill_file"
+      ;;
+
+    list)
+      if [ ! -d ".agents/skills" ]; then
+        echo "cairn: no skills directory found at .agents/skills/"
+        return 0
+      fi
+      local found=0
+      echo "== Installed Skills (.agents/skills) =="
+      local sdir
+      for sdir in .agents/skills/*; do
+        [ -d "$sdir" ] || continue
+        local sfile="$sdir/SKILL.md"
+        local sname sdesc
+        sname="$(basename "$sdir")"
+        if [ -f "$sfile" ]; then
+          sdesc="$(sed -n 's/^description:[[:space:]]*//p' "$sfile" | head -1)"
+          [ -z "$sdesc" ] && sdesc="$(sed -n 's/^# [[:space:]]*//p' "$sfile" | head -1)"
+          [ -z "$sdesc" ] && sdesc="Skill instructions in SKILL.md"
+          printf "  %-24s %s\n" "$sname" "$sdesc"
+          found=1
+        fi
+      done
+      if [ "$found" = "0" ]; then
+        echo "  (no skills with SKILL.md found in .agents/skills/)"
+      fi
+      ;;
+  esac
+}
+
 case "$CMD" in
   status) run_installed cairn-status.sh; exit $? ;;
   hooks)  run_installed cairn-hooks.sh;  exit $? ;;
   # This command promises a read-only host snapshot. Never execute a
   # repository-provided replacement when fulfilling that promise.
   resources) run_template cairn-resources.sh; exit $? ;;
+  compact) run_compact; exit $? ;;
+  skill) run_skill; exit $? ;;
 esac
 
 # --- ignore list -------------------------------------------------------------
@@ -402,7 +672,7 @@ replace_entry_file_contents() { # replace <dest> with <prepared file>, preserve 
     rm -f "$preserved"
     entry_file_error "could not restore metadata for $dest"
   fi
-  if ! mv "$preserved" "$dest"; then
+  if ! mv -f "$preserved" "$dest"; then
     rm -f "$preserved"
     entry_file_error "could not replace $dest"
   fi
@@ -648,7 +918,7 @@ migrate_legacy() {
     if git ls-files --error-unmatch "$from" >/dev/null 2>&1; then
       git mv "$from" "$to"
     else
-      mv "$from" "$to"
+      mv -f "$from" "$to"
     fi
     MOVED+=("$from -> $to")
   done
@@ -710,12 +980,12 @@ sync_file() { # sync_file <template> <dest> [executable]
   tmp="$(mktemp)"; render "$tpl" > "$tmp"
   if [ ! -f "$dest" ]; then
     if [ "$CHECK" = "1" ]; then DRIFT+=("$dest (missing)"); rm -f "$tmp"; return; fi
-    mkdir -p "$(dirname "$dest")"; mv "$tmp" "$dest"
+    mkdir -p "$(dirname "$dest")"; mv -f "$tmp" "$dest"
     [ -n "$exec_bit" ] && chmod +x "$dest"; CREATED+=("$dest"); return
   fi
   if cmp -s "$tmp" "$dest"; then rm -f "$tmp"; return; fi
   if [ "$CHECK" = "1" ]; then DRIFT+=("$dest (differs)"); rm -f "$tmp"; return; fi
-  mv "$tmp" "$dest"; [ -n "$exec_bit" ] && chmod +x "$dest"; UPDATED+=("$dest")
+  mv -f "$tmp" "$dest"; [ -n "$exec_bit" ] && chmod +x "$dest"; UPDATED+=("$dest")
 }
 
 cairn_hook_is_owned() {
@@ -770,13 +1040,13 @@ sync_runtime_shim() { # create a bundled pointer without clobbering native rules
   tmp="$(mktemp)"; render "$tpl" > "$tmp"
   if [ ! -e "$dest" ] && ! [ -L "$dest" ]; then
     if [ "$CHECK" = "1" ]; then DRIFT+=("$dest (missing)"); rm -f "$tmp"; return; fi
-    mv "$tmp" "$dest"; CREATED+=("$dest"); return
+    mv -f "$tmp" "$dest"; CREATED+=("$dest"); return
   fi
   if [ -f "$dest" ] && ! [ -L "$dest" ] && cmp -s "$tmp" "$dest"; then
     rm -f "$tmp"; return
   fi
   if [ "$FORCE" = "1" ] && [ "$CHECK" != "1" ] && [ -f "$dest" ] && ! [ -L "$dest" ]; then
-    mv "$tmp" "$dest"; UPDATED+=("$dest (forced pointer replacement)"); return
+    mv -f "$tmp" "$dest"; UPDATED+=("$dest (forced pointer replacement)"); return
   fi
   rm -f "$tmp"
   # A native instruction file can contain local rules that cAIrn cannot infer.
@@ -816,7 +1086,7 @@ sync_gitattributes() { # merge only cAIrn's marked LF-protection block
   block="$(mktemp)"; render "$TEMPLATES/GITATTRIBUTES.cairn-block" > "$block"
   if [ ! -e "$dest" ] && ! [ -L "$dest" ]; then
     if [ "$CHECK" = "1" ]; then DRIFT+=("$dest (missing cAIrn LF block)"); rm -f "$block"; return; fi
-    mv "$block" "$dest"; CREATED+=("$dest"); return
+    mv -f "$block" "$dest"; CREATED+=("$dest"); return
   fi
   if [ -L "$dest" ] || [ ! -f "$dest" ]; then
     rm -f "$block"
@@ -873,7 +1143,7 @@ sync_entry_file() { # sync_entry_file <registered repo-relative path>
 
   if [ ! -e "$dest" ]; then
     if [ "$CHECK" = "1" ]; then DRIFT+=("$dest (missing)"); rm -f "$tmp"; return; fi
-    mkdir -p "$(dirname "$dest")"; mv "$tmp" "$dest"; CREATED+=("$dest"); return
+    mkdir -p "$(dirname "$dest")"; mv -f "$tmp" "$dest"; CREATED+=("$dest"); return
   fi
 
   if ! entry_file_has_cairn_block "$dest"; then
@@ -988,7 +1258,7 @@ else
         index($0,b){ while ((getline l < repl) > 0) print l; close(repl); f=1; next }
         f && index($0,e){ f=0; next }
         !f { print }' AGENTS.md > "$out"
-      mv "$out" AGENTS.md; UPDATED+=("AGENTS.md (ledger block)")
+      mv -f "$out" AGENTS.md; UPDATED+=("AGENTS.md (ledger block)")
     fi
     rm -f "$current"
   elif grep -qF "$LEGACY_BEGIN" AGENTS.md; then

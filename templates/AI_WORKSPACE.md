@@ -1,7 +1,7 @@
 # AI Workspace Protocol
 
 <!-- Version control: bump Version and Last updated on every edit to this file. -->
-**Version:** 2 · **Last updated:** __DATE__ · **Updated by:** cairn
+**Version:** 3 · **Last updated:** __DATE__ · **Updated by:** cairn
 
 This file is a pointer, not a source of rules. It exists so any agent or human
 looking for a "workspace protocol" lands on the real, in-repo sources instead of
@@ -12,10 +12,12 @@ a stale or out-of-repo snapshot.
   runtime-adapter files only point there; so does this file.
 - **State** — in-flight work across every worktree, branch, and actor/runtime/model:
   [AI_HANDOFF.md](AI_HANDOFF.md) is the shared ledger. Read it before starting a
-  task and update it in the same change as any code edit.
+  session, including resumed tasks, and update it in the same change as any
+  code edit. Follow the startup and handoff workflow in `AGENTS.md`.
 
 If a runtime does not automatically read `AGENTS.md`, configure its native
-instruction entry point to load this file. For a plain-text entry point, register
+instruction entry point to load the repository-root `AGENTS.md` and
+`AI_HANDOFF.md`. For a plain-text entry point, register
 it with `cairn init --entry-file path/to/instructions.md`; use
 `--adopt-entry-file` instead to preserve an existing instruction file and append
 only cAIrn's marked routing block.

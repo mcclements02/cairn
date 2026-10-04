@@ -23,6 +23,41 @@ new_repo() {
   git -C "$repo" config user.name Cairn-Test
 }
 
+# Version output works without a target repository.
+contains "$ROOT/VERSION" "0.1.0"
+"$CAIRN" --version > "$TMP_ROOT/version"
+contains "$TMP_ROOT/version" "cairn 0.1.0"
+
+# The canonical startup workflow reaches arbitrary agents and existing installs.
+onboarding_repo="$TMP_ROOT/onboarding"
+new_repo "$onboarding_repo"
+printf '%s\n' '# Local project instructions' 'Preserve this project rule.' > "$onboarding_repo/AGENTS.md"
+mkdir -p "$onboarding_repo/tooling"
+printf '%s\n' '# Worker instructions' 'Preserve this worker rule.' > "$onboarding_repo/tooling/worker.md"
+"$CAIRN" init --adopt-entry-file tooling/worker.md "$onboarding_repo" >/dev/null
+contains "$onboarding_repo/AGENTS.md" "Preserve this project rule."
+contains "$onboarding_repo/tooling/worker.md" "Preserve this worker rule."
+contains "$onboarding_repo/AGENTS.md" "Start or resume a session (every agent)"
+contains "$onboarding_repo/AGENTS.md" "A partial"
+contains "$onboarding_repo/tooling/worker.md" "At the start of every session"
+contains "$onboarding_repo/AI_HANDOFF.md" "New or returning participant"
+for shim in CLAUDE.md GEMINI.md CHATGPT.md; do
+  contains "$onboarding_repo/$shim" 'Read repository-root `AI_HANDOFF.md` at the start of every session'
+done
+printf '%s\n' '' '### 2026-10-04 · main · arbitrary-worker / session-42' '- **Changed:** Work remains unfinished.' '- **Validation:** not run.' '- **Status:** blocked.' '- **Next:** resume the existing task.' >> "$onboarding_repo/AI_HANDOFF.md"
+cp "$onboarding_repo/AI_HANDOFF.md" "$TMP_ROOT/onboarding-ledger-before"
+# Simulate an older managed workflow while retaining custom surrounding rules.
+perl -pi -e 's/Start or resume a session \(every agent\)/Old startup workflow/' "$onboarding_repo/AGENTS.md"
+if "$CAIRN" check "$onboarding_repo" >/dev/null 2>&1; then
+  fail "check accepted outdated startup instructions"
+fi
+"$CAIRN" init "$onboarding_repo" >/dev/null
+contains "$onboarding_repo/AGENTS.md" "Start or resume a session (every agent)"
+contains "$onboarding_repo/AGENTS.md" "Preserve this project rule."
+contains "$onboarding_repo/tooling/worker.md" "Preserve this worker rule."
+cmp -s "$TMP_ROOT/onboarding-ledger-before" "$onboarding_repo/AI_HANDOFF.md" || fail "onboarding upgrade changed ledger history"
+"$CAIRN" check "$onboarding_repo" >/dev/null
+
 # A path owned by any runtime/model can be registered and stays in sync.
 generic_repo="$TMP_ROOT/generic"
 new_repo "$generic_repo"
@@ -437,5 +472,170 @@ sed -n '/^## Log/,$p' "$migrate_repo/AI_HANDOFF.md" > "$TMP_ROOT/log-before"
 contains "$migrate_repo/AI_HANDOFF.md" "AI agent, runtime, model, and human collaborator**"
 contains "$migrate_repo/AI_HANDOFF.md" "| Branch | Worktree | Actor / runtime / model | Status | Summary | Updated |"
 cmp -s "$TMP_ROOT/log-before" <(sed -n '/^## Log/,$p' "$migrate_repo/AI_HANDOFF.md") || fail "header migration rewrote the Log"
+
+# cairn skill: scaffolding and listing reusable skills
+skill_repo="$TMP_ROOT/skill-repo"
+new_repo "$skill_repo"
+"$CAIRN" init "$skill_repo" >/dev/null
+"$CAIRN" skill init test-task "$skill_repo" >/dev/null
+[ -f "$skill_repo/.agents/skills/test-task/SKILL.md" ] || fail "skill init did not create SKILL.md"
+contains "$skill_repo/.agents/skills/test-task/SKILL.md" "name: test-task"
+contains "$skill_repo/.agents/skills/test-task/SKILL.md" "## When to use"
+if "$CAIRN" skill init test-task "$skill_repo" >/dev/null 2>&1; then
+  fail "skill init allowed creating an existing skill"
+fi
+if "$CAIRN" skill init "invalid/name" "$skill_repo" >/dev/null 2>&1; then
+  fail "skill init accepted an invalid skill name with slash"
+fi
+skill_output="$("$CAIRN" skill list "$skill_repo")"
+echo "$skill_output" | grep -qF "test-task" || fail "skill list did not include created skill"
+
+# cairn compact: archives older entries while retaining active work and recent entries
+compact_repo="$TMP_ROOT/compact-repo"
+new_repo "$compact_repo"
+"$CAIRN" init "$compact_repo" >/dev/null
+# Initially has 1 entry (cairn-init)
+"$CAIRN" compact --keep 5 "$compact_repo" > "$TMP_ROOT/compact-noop.txt"
+contains "$TMP_ROOT/compact-noop.txt" "compaction not needed"
+[ ! -e "$compact_repo/AI_HANDOFF_ARCHIVE.md" ] || fail "noop compaction created an archive"
+
+prepend_entry() {
+  local file="$1" entry="$2" tmp_entry tmp_out
+  tmp_entry="$(mktemp)"
+  tmp_out="$(mktemp)"
+  printf '%s\n' "$entry" > "$tmp_entry"
+  awk -v ef="$tmp_entry" '
+    /^## Log/ {
+      print
+      print ""
+      while ((getline l < ef) > 0) print l
+      close(ef)
+      next
+    }
+    { print }
+  ' "$file" > "$tmp_out"
+  mv -f "$tmp_out" "$file"
+  rm -f "$tmp_entry"
+}
+
+# Prepend multiple entries (newest on top)
+for i in {1..6}; do
+  entry="$(printf '### 2026-09-0%s · feat-%s · agent-%s\n- **Changed:** Step %s.\n- **Validation:** ok.\n- **Status:** done.\n- **Next:** next-%s.\n' "$i" "$i" "$i" "$i" "$i")"
+  prepend_entry "$compact_repo/AI_HANDOFF.md" "$entry"
+done
+# Total entries: 1 initial + 6 added = 7 entries.
+"$CAIRN" compact --keep 3 "$compact_repo" > "$TMP_ROOT/compact-run.txt"
+contains "$TMP_ROOT/compact-run.txt" "archived 4 entries to AI_HANDOFF_ARCHIVE.md (3 entries retained in AI_HANDOFF.md)"
+[ -f "$compact_repo/AI_HANDOFF_ARCHIVE.md" ] || fail "compact did not create AI_HANDOFF_ARCHIVE.md"
+contains "$compact_repo/AI_HANDOFF.md" "Older entries archived in [AI_HANDOFF_ARCHIVE.md](AI_HANDOFF_ARCHIVE.md)"
+contains "$compact_repo/AI_HANDOFF.md" "feat-6"
+contains "$compact_repo/AI_HANDOFF.md" "feat-5"
+contains "$compact_repo/AI_HANDOFF.md" "feat-4"
+does_not_contain "$compact_repo/AI_HANDOFF.md" "feat-1"
+does_not_contain "$compact_repo/AI_HANDOFF.md" "cairn-init"
+contains "$compact_repo/AI_HANDOFF_ARCHIVE.md" "feat-3"
+contains "$compact_repo/AI_HANDOFF_ARCHIVE.md" "feat-1"
+contains "$compact_repo/AI_HANDOFF_ARCHIVE.md" "cairn-init"
+
+# Compacted ledger passes structural check and cairn check
+"$CAIRN" check "$compact_repo" >/dev/null
+# pre-commit hook passes
+git -C "$compact_repo" add AI_HANDOFF.md AI_HANDOFF_ARCHIVE.md
+git -C "$compact_repo" commit -qm 'Compact ledger'
+
+# Second compaction prepends older entries properly
+for i in {7..9}; do
+  entry="$(printf '### 2026-09-0%s · feat-%s · agent-%s\n- **Changed:** Step %s.\n- **Validation:** ok.\n- **Status:** done.\n- **Next:** next-%s.\n' "$i" "$i" "$i" "$i" "$i")"
+  prepend_entry "$compact_repo/AI_HANDOFF.md" "$entry"
+done
+"$CAIRN" compact --keep 3 "$compact_repo" > "$TMP_ROOT/compact-run2.txt"
+contains "$compact_repo/AI_HANDOFF_ARCHIVE.md" "feat-6"
+contains "$compact_repo/AI_HANDOFF_ARCHIVE.md" "cairn-init"
+
+# Changed paths passed as arguments retain their individual classifications.
+if (cd "$handoff_repo" && bash "$ROOT/templates/scripts/cairn-check.sh" app.js README.md) >/dev/null 2>&1; then
+  fail "checker arguments let a trailing docs path hide a code change"
+fi
+(cd "$handoff_repo" && bash "$ROOT/templates/scripts/cairn-check.sh" AI_HANDOFF.md app.js) >/dev/null
+(cd "$handoff_repo" && bash "$ROOT/templates/scripts/cairn-check.sh" "notes with spaces.md") >/dev/null
+
+# Content creation rejects traversal, metadata targets, aliases, and symlinks.
+safe_compact_repo="$TMP_ROOT/safe-compact"
+new_repo "$safe_compact_repo"
+"$CAIRN" init "$safe_compact_repo" >/dev/null
+prepend_entry "$safe_compact_repo/AI_HANDOFF.md" '### newest
+- **Status:** done.'
+cp "$safe_compact_repo/AI_HANDOFF.md" "$TMP_ROOT/safe-ledger-before"
+for archive in AI_HANDOFF.md ai_handoff.md ../escaped.md .git/archive.md AGENTS.md; do
+  if "$CAIRN" compact --keep 1 --archive "$archive" "$safe_compact_repo" >/dev/null 2>&1; then
+    fail "compact accepted unsafe archive: $archive"
+  fi
+  cmp -s "$TMP_ROOT/safe-ledger-before" "$safe_compact_repo/AI_HANDOFF.md" || fail "rejected compaction changed history"
+done
+ln "$safe_compact_repo/AI_HANDOFF.md" "$safe_compact_repo/alias.md"
+if "$CAIRN" compact --keep 1 --archive alias.md "$safe_compact_repo" >/dev/null 2>&1; then
+  fail "compact accepted a hardlink to its ledger"
+fi
+mkdir -p "$TMP_ROOT/compact-outside"
+ln -s "$TMP_ROOT/compact-outside" "$safe_compact_repo/archives"
+if "$CAIRN" compact --keep 1 --archive archives/history.md "$safe_compact_repo" >/dev/null 2>&1; then
+  fail "compact followed a symlinked archive parent"
+fi
+[ ! -e "$TMP_ROOT/compact-outside/history.md" ] || fail "compact wrote outside its repository"
+printf '%s\n' 'Unrelated notes must survive.' > "$safe_compact_repo/notes.md"
+if "$CAIRN" compact --keep 1 --archive notes.md "$safe_compact_repo" >/dev/null 2>&1; then
+  fail "compact appended history to unrelated Markdown"
+fi
+contains "$safe_compact_repo/notes.md" 'Unrelated notes must survive.'
+"$CAIRN" compact --keep 0001 --dry-run "$safe_compact_repo" > "$TMP_ROOT/compact-preview"
+contains "$TMP_ROOT/compact-preview" 'would archive 1 entries'
+cmp -s "$TMP_ROOT/safe-ledger-before" "$safe_compact_repo/AI_HANDOFF.md" || fail "dry-run changed the ledger"
+[ ! -e "$safe_compact_repo/AI_HANDOFF_ARCHIVE.md" ] || fail "dry-run wrote an archive"
+for keep in 0 0000 9999999999999999999999999; do
+  if "$CAIRN" compact --keep "$keep" "$safe_compact_repo" >/dev/null 2>&1; then
+    fail "compact accepted an invalid retention count: $keep"
+  fi
+done
+
+# Unresolved or unknown entries survive age-based compaction; active branches
+# retain their older entries even when a checkpoint was marked done.
+retention_repo="$TMP_ROOT/retention"
+new_repo "$retention_repo"
+"$CAIRN" init "$retention_repo" >/dev/null
+for status in done blocked unknown; do
+  prepend_entry "$retention_repo/AI_HANDOFF.md" "### 2026-10-04 · branch-$status · worker
+- **Status:** $status."
+done
+prepend_entry "$retention_repo/AI_HANDOFF.md" '### 2026-10-04 · in-flight · worker
+- **Status:** done.'
+printf '%s\n' '| in-flight | . | worker | in progress | Current task | 2026-10-04 |' > "$TMP_ROOT/active-row"
+awk -v row="$TMP_ROOT/active-row" '/^## Log/ { while ((getline l < row) > 0) print l; close(row) } { print }' "$retention_repo/AI_HANDOFF.md" > "$TMP_ROOT/retention-ledger"
+mv "$TMP_ROOT/retention-ledger" "$retention_repo/AI_HANDOFF.md"
+prepend_entry "$retention_repo/AI_HANDOFF.md" '### 2026-10-04 · newest · worker
+- **Status:** done.'
+chmod 644 "$retention_repo/AI_HANDOFF.md"
+"$CAIRN" compact --keep 1 "$retention_repo" >/dev/null
+for branch in branch-blocked branch-unknown in-flight newest; do
+  contains "$retention_repo/AI_HANDOFF.md" "$branch"
+done
+does_not_contain "$retention_repo/AI_HANDOFF.md" 'branch-done'
+contains "$retention_repo/AI_HANDOFF_ARCHIVE.md" 'branch-done'
+contains "$retention_repo/AI_HANDOFF.md" '| in-flight | . | worker | in progress'
+mode="$(LC_ALL=C ls -ld "$retention_repo/AI_HANDOFF.md" | awk '{print $1}')"
+case "$mode" in -rw-r--r--*) ;; *) fail "compact changed ledger permissions" ;; esac
+
+unsafe_skill_repo="$TMP_ROOT/unsafe-skill"
+new_repo "$unsafe_skill_repo"
+mkdir -p "$TMP_ROOT/skill-outside"
+ln -s "$TMP_ROOT/skill-outside" "$unsafe_skill_repo/.agents"
+if "$CAIRN" skill init demo "$unsafe_skill_repo" >/dev/null 2>&1; then
+  fail "skill init followed a symlinked .agents directory"
+fi
+[ ! -e "$TMP_ROOT/skill-outside/skills/demo/SKILL.md" ] || fail "skill init wrote outside its repository"
+for name in . ..; do
+  if "$CAIRN" skill init "$name" "$skill_repo" >/dev/null 2>&1; then
+    fail "skill init accepted a traversal component: $name"
+  fi
+done
 
 echo "ok - cairn smoke tests"

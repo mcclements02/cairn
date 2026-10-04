@@ -47,7 +47,37 @@ flowchart TD
 an existing hook setup. CI provides the shared boundary when the local hook is
 absent or bypassed.
 
-## Install 
+## Install
+
+### Homebrew (macOS and Linux)
+
+This repository includes a development formula in `Formula/cairn.rb`. Once that
+formula and the source changes are pushed to `main`, install through a custom tap:
+
+```sh
+brew tap mcclements02/cairn https://github.com/mcclements02/cairn.git
+brew install --HEAD mcclements02/cairn/cairn
+```
+
+The formula installs Bash, Git, and Perl dependencies, keeps cAIrn's templates
+beside its executable, and exposes `cairn` on PATH. Installing the package does
+not initialize your projects; run `cairn init` in each repository you want to use.
+
+This is a custom tap with a development (`--HEAD`) formula, not a package in
+Homebrew's default catalog. To update it after upstream changes:
+
+```sh
+brew update
+brew upgrade --fetch-HEAD mcclements02/cairn/cairn
+```
+
+To publish a stable package later, tag a release, add its archive `url` and
+`sha256` to the formula, and retain `head` for development installs. The same tap
+can then support `brew install mcclements02/cairn/cairn` without `--HEAD`.
+See Homebrew's [tap guide](https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap)
+and [formula cookbook](https://docs.brew.sh/Formula-Cookbook).
+
+### Manual install
 
 ```sh
 git clone https://github.com/mcclements02/cairn.git ~/.cairn
@@ -70,6 +100,9 @@ cairn check  [--scripts-dir DIR] [PATH]             report drift; exit 1 if any
 cairn status [--scripts-dir DIR] [PATH]             cross-worktree stranded work
 cairn hooks  [--scripts-dir DIR] [PATH]             enable hooks in this clone
 cairn resources [PATH]                              host-local RAM/process snapshot (read-only)
+cairn compact [--keep N] [--archive PATH] [--dry-run] [PATH]    compact ledger and archive older entries
+cairn skill  init <name> | list [PATH]              scaffold or list reusable agent skills
+cairn --version                                    print the installed version
 cairn help
 ```
 
@@ -140,6 +173,49 @@ Registering or adopting an entry point is a project change. Before committing
 that configuration, add the corresponding `AI_HANDOFF.md` Log entry; cAIrn does
 not fabricate an actor, summary, or validation result on an agent's behalf.
 
+## Starting with any agent
+
+Cursor, Devin, an IDE assistant, a hosted worker, a local model, and a human
+teammate follow the same repository protocol. The handoff lives in Git rather
+than a particular tool's chat history. No supported-agent list or model identifier
+is needed.
+
+Give a new or returning participant this startup instruction:
+
+> Read the repository-root `AGENTS.md` and `AI_HANDOFF.md` before working.
+> Follow the startup and handoff workflow in `AGENTS.md`. Check live Git state
+> and existing active work, maintain your Active Work row, and leave a Log entry
+> with changed files, validation results, status, and the next step before you
+> pause or finish. Include the ledger with code in any authorized commit.
+
+The managed `AGENTS.md` ledger block contains that full workflow, so re-running
+`cairn init` upgrades existing installations while preserving surrounding project
+instructions and Log history. A participant opening `AI_HANDOFF.md` first is
+routed back to the canonical rules.
+
+An agent can only follow instructions it actually loads. For tools that do not
+read `AGENTS.md` automatically, put the startup instruction in their repository
+rules, onboarding configuration, or initial task prompt. Use their documented
+activation settings so it applies at the start of every session. A file's
+presence alone does not activate it in every tool.
+
+For a Markdown or plain-text instruction file, use the existing generic adapter:
+
+```sh
+# Choose the instruction path your agent actually reads.
+cairn init --entry-file path/to/agent-instructions.md
+
+# Preserve existing native content and add the shared routing block.
+cairn init --adopt-entry-file path/to/existing-instructions.md
+```
+
+These paths are placeholders, not tool-specific discovery conventions. For a
+structured configuration file, configure its native format to load the two
+canonical files; do not append Markdown to JSON, YAML, or other structured syntax.
+Keep workflow rules in `AGENTS.md` so switching agents does not create competing
+copies of the protocol. Use free-text actor identifiers such as `Cursor / worker-1`,
+`Devin / task-42`, or a teammate's name, without guessing the underlying model.
+
 ## The ledger
 
 `AI_HANDOFF.md` has two sections, shaped by how git merges them:
@@ -155,6 +231,38 @@ to six months from now.
 
 > A merge conflict in the Log means two agents diverged. Resolve it by keeping
 > **both** entries — never by dropping one. The conflict *is* the signal.
+
+### Compacting the ledger periodically
+
+An active project with multiple agents accumulates dozens or hundreds of log entries. Over time, an unbounded ledger consumes significant token context without adding value for active tasks.
+
+Periodically compact the ledger to keep `AI_HANDOFF.md` lean:
+
+```sh
+cairn compact
+# or configure retention:
+cairn compact --keep 15 --archive AI_HANDOFF_ARCHIVE.md
+# Preview without changing the ledger or archive:
+cairn compact --keep 15 --dry-run
+```
+
+`cairn compact` safely preserves the `Active Work` table and the most recent N entries in `AI_HANDOFF.md`, moving older resolved entries to `AI_HANDOFF_ARCHIVE.md` (newest on top) and linking to the archive. The compacted ledger remains fully structurally valid for pre-commit and CI checks. Older entries with unresolved or unknown status, and entries for in-flight Active Work branches, remain in the live ledger, so retention can exceed N. Only explicit terminal statuses (`done`, `resolved`, `completed`, `complete`, `merged`, `abandoned`, `cancelled`, `canceled`, or `closed`) are eligible for archival. Archive paths must name a distinct Markdown file inside the repository without symlink components; existing archives must have a `Log Archive` or `Archived Log` section.
+
+## Reusable skills
+
+When something is done more than once — recurring verification steps, build fixes, database resets, or multi-step release workflows — it should not remain ad-hoc commands trapped in agent conversation logs.
+
+**Repeat things become reusable skills:**
+
+```sh
+# Scaffold a new reusable skill:
+cairn skill init <skill-name>
+
+# List installed skills in the repository:
+cairn skill list
+```
+
+This generates `.agents/skills/<skill-name>/SKILL.md` with standard YAML frontmatter and operational sections (`When to use`, `Prerequisites`, `Workflow`, `Validation`). Agents that support this skill convention can discover `.agents/skills/`; for other tools, explicitly load the relevant `SKILL.md` or run its documented workflow. Skill discovery depends on the runtime and its configuration.
 
 ## Enforcement
 

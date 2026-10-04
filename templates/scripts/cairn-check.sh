@@ -5,8 +5,11 @@
 set -euo pipefail
 
 LEDGER="AI_HANDOFF.md"
-files="$*"
-[ -z "$files" ] && files="$(cat || true)"
+if [ "$#" -gt 0 ]; then
+  files="$(printf '%s\n' "$@")"
+else
+  files="$(cat)"
+fi
 if [ -z "$files" ]; then echo "cairn: no changed files — pass."; exit 0; fi
 
 # CI runs against the PR's checked-out index. A changed-path list can include

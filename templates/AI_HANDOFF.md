@@ -1,13 +1,19 @@
 # AI Handoff Ledger — Project State
 
 <!-- Version control: bump Version and Last updated on every edit to this file. -->
-**Version:** 2 · **Last updated:** __DATE__ · **Updated by:** cairn
+**Version:** 3 · **Last updated:** __DATE__ · **Updated by:** cairn
 
 Single source of truth for **in-flight work across every worktree, branch, and
 AI agent, runtime, model, and human collaborator**. The `Actor / runtime /
 model` value is free text, not an allowlist. How to use this file is defined in
 [AGENTS.md](AGENTS.md) → "Project State Ledger (Cross-Agent Sync)". This file
 holds **state, not rules**.
+
+New or returning participant: read the repository-root [AGENTS.md](AGENTS.md)
+and this ledger at the start of every session. The startup and handoff workflow
+is in AGENTS.md's "Project State Ledger (Cross-Agent Sync)" section. Use Active
+Work and recent Log entries to resume work and leave the next participant a
+current handoff, even when the task is unfinished or no commit is authorized.
 
 > Update this ledger in the **same change** as any code edit and commit them
 > together, so every branch and worktree carries the current picture and no work
@@ -25,8 +31,10 @@ this table merges cleanly. Remove a row once its branch is merged or abandoned
 
 ## Log (append newest on top)
 
-Append-only. One entry per handoff. Never rewrite or delete past entries. A merge
-conflict here means two agents diverged — keep **both** entries.
+Append-only during active work. One entry per handoff. Never rewrite active entries.
+Compact periodically (or run `cairn compact`) by archiving older resolved entries into
+[AI_HANDOFF_ARCHIVE.md](AI_HANDOFF_ARCHIVE.md) while retaining recent entries and active work.
+A merge conflict here means two agents diverged — keep **both** entries.
 
 ### __DATE__ · __BRANCH__ · cairn
 - **Changed:** Initialized the cAIrn protocol — `AGENTS.md` ledger section,
