@@ -1,6 +1,6 @@
 # cAIrn Project Handoff
 
-**Version:** 3 · **Last updated:** 2026-10-04 · **Updated by:** Codex
+**Version:** 4 · **Last updated:** 2026-10-04 · **Updated by:** Codex
 
 Repository state for contributors to cAIrn itself. The installable ledger template
 is `templates/AI_HANDOFF.md`; this file records work on the installer.
@@ -12,6 +12,17 @@ is `templates/AI_HANDOFF.md`; this file records work on the installer.
 | main | . | Codex | in progress | Prepare 0.1.0 release and Homebrew distribution | 2026-10-04 |
 
 ## Log (append newest on top)
+
+### 2026-10-04 · main · Codex
+- **Changed:** Corrected Homebrew's drift fixture to use Ruby File.write; the
+  Homebrew Pathname.write helper intentionally refuses an existing file.
+  Created mcclements02/homebrew-core as a preparation fork; no core PR opened.
+- **Validation:** Clean macOS Homebrew installation succeeded in run
+  37220308479. Its package test reached init and check before the fixture-write
+  error above; revised package checks remain pending. Linux job is still running.
+- **Status:** formula test repair in progress; source release remains unchanged.
+- **Next:** Run the corrected Homebrew package checks and prepare an accurate
+  submission checklist with unresolved eligibility and local CLT requirements.
 
 ### 2026-10-04 · main · Codex
 - **Changed:** Added clean-runner Homebrew package validation on macOS and Linux,

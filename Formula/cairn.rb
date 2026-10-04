@@ -24,7 +24,7 @@ class Cairn < Formula
     assert_path_exists testpath/"AI_HANDOFF.md"
     assert_match "CAIRN-ENTRY:BEGIN", (testpath/"agent-instructions.md").read
     assert_match "in sync", shell_output("#{bin}/cairn check #{testpath}")
-    (testpath/"scripts/cairn-check.sh").write "deliberate drift\n"
+    File.write(testpath/"scripts/cairn-check.sh", "deliberate drift\n")
     assert_match "DRIFT", shell_output("#{bin}/cairn check #{testpath}", 1)
   end
 end
