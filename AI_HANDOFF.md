@@ -1,6 +1,6 @@
 # cAIrn Project Handoff
 
-**Version:** 1 · **Last updated:** 2026-10-04 · **Updated by:** Codex
+**Version:** 2 · **Last updated:** 2026-10-04 · **Updated by:** Codex
 
 Repository state for contributors to cAIrn itself. The installable ledger template
 is `templates/AI_HANDOFF.md`; this file records work on the installer.
@@ -12,6 +12,20 @@ is `templates/AI_HANDOFF.md`; this file records work on the installer.
 | main | . | Codex | in progress | Prepare 0.1.0 release and Homebrew distribution | 2026-10-04 |
 
 ## Log (append newest on top)
+
+### 2026-10-04 · main · Codex
+- **Changed:** Published stable GitHub release v0.1.0 from commit fff29f4.
+  Added its archive URL and SHA-256 to Formula/cairn.rb and documented stable
+  custom-tap installation without --HEAD. Trusted only the cAIrn formula locally
+  for Homebrew package testing.
+- **Validation:** Final local smoke tests passed. GitHub Actions run 37219780464
+  passed shell syntax and integration tests on macos-latest and ubuntu-latest.
+  Downloaded the tagged source archive and verified that it excludes unrelated
+  local files; SHA-256 is recorded in the formula. Full brew install/test/audit
+  remains pending.
+- **Status:** stable source released; package validation in progress.
+- **Next:** Validate the stable formula with Homebrew, prepare the official PR
+  material, and report the eligibility gap without claiming catalog acceptance.
 
 ### 2026-10-04 · main · Codex
 - **Changed:** Agent-neutral onboarding in README and templates; compaction and

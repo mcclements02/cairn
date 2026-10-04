@@ -51,29 +51,36 @@ absent or bypassed.
 
 ### Homebrew (macOS and Linux)
 
-This repository includes a development formula in `Formula/cairn.rb`. Once that
-formula and the source changes are pushed to `main`, install through a custom tap:
+A stable formula is included in `Formula/cairn.rb`, using the checksummed
+[0.1.0 release](https://github.com/mcclements02/cairn/releases/tag/v0.1.0).
+Install through the project's custom tap:
 
 ```sh
 brew tap mcclements02/cairn https://github.com/mcclements02/cairn.git
-brew install --HEAD mcclements02/cairn/cairn
+brew install cairn
+```
+
+On Homebrew versions that require explicit trust, run this before tapping:
+
+```sh
+brew trust --formula mcclements02/cairn/cairn
 ```
 
 The formula installs Bash, Git, and Perl dependencies, keeps cAIrn's templates
 beside its executable, and exposes `cairn` on PATH. Installing the package does
 not initialize your projects; run `cairn init` in each repository you want to use.
 
-This is a custom tap with a development (`--HEAD`) formula, not a package in
-Homebrew's default catalog. To update it after upstream changes:
+This is a custom tap, not a package in Homebrew's default catalog. After the
+initial tap setup, `brew install cairn` works without `--HEAD`. Update stable
+installs with:
 
 ```sh
 brew update
-brew upgrade --fetch-HEAD mcclements02/cairn/cairn
+brew upgrade cairn
 ```
 
-To publish a stable package later, tag a release, add its archive `url` and
-`sha256` to the formula, and retain `head` for development installs. The same tap
-can then support `brew install mcclements02/cairn/cairn` without `--HEAD`.
+Development installs remain available with
+`brew install --HEAD mcclements02/cairn/cairn`.
 See Homebrew's [tap guide](https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap)
 and [formula cookbook](https://docs.brew.sh/Formula-Cookbook).
 
