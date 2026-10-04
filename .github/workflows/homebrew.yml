@@ -1,0 +1,44 @@
+name: Homebrew
+
+on:
+  push:
+    branches: [main]
+    paths: ["Formula/**", ".github/workflows/homebrew.yml"]
+  pull_request:
+    paths: ["Formula/**", ".github/workflows/homebrew.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Homebrew (${{ matrix.os }})
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_ANALYTICS: "1"
+    steps:
+      - name: Set up Homebrew and checkout
+        uses: Homebrew/actions/setup-homebrew@1f8e202ffddf94def7f42f6fa3a482e821489f9c # 2026.07.10.1
+        with:
+          stable: true
+      - name: Load cAIrn tap
+        run: |
+          if brew help trust >/dev/null 2>&1; then
+            brew trust --formula mcclements02/cairn/cairn
+          fi
+          brew tap mcclements02/cairn https://github.com/mcclements02/cairn.git
+      - name: Install stable release from source
+        run: brew install --build-from-source mcclements02/cairn/cairn
+      - name: Package test
+        run: brew test mcclements02/cairn/cairn
+      - name: Formula style
+        run: brew style mcclements02/cairn/cairn
+      - name: Strict formula audit
+        run: brew audit --strict mcclements02/cairn/cairn

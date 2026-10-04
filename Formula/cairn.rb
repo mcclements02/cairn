@@ -11,7 +11,7 @@ class Cairn < Formula
   depends_on "perl"
 
   def install
-    inreplace "cairn", "#!/usr/bin/env bash", "#!#{Formula["bash"].opt_bin}/bash"
+    inreplace "cairn", "#!/usr/bin/env bash", "#!#{formula_opt_bin("bash")}/bash"
     libexec.install "cairn", "templates", "VERSION"
     bin.install_symlink libexec/"cairn"
   end
